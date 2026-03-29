@@ -15,7 +15,7 @@
 
   .header-bar {
     width: 100%; padding: 1rem 0; text-align: center;
-    background: #27ae60; /* change this color each commit to verify deploy */
+    background: #c0392b; /* change this color each commit to verify deploy */
   }
 
   h1 { margin: 0.25rem 0 0.15rem; font-size: 1.8rem; letter-spacing: -0.02em; }
@@ -200,33 +200,15 @@ const ctxMask = canvasMask.getContext("2d");
 
 const hiddenVideo = document.getElementById("hiddenVideo");
 
-// --- Auto-reprocess on slider/checkbox change (images only) ---
-function autoReprocess() {
-  if (!cvReady || !currentFile || processing) return;
-  if (!currentFile.type.startsWith("image/")) return;
-  maskRow.style.display = showMaskCb.checked ? "flex" : "none";
-  processImage();
-}
-
-let reprocessTimer = null;
-function scheduleReprocess() {
-  clearTimeout(reprocessTimer);
-  reprocessTimer = setTimeout(autoReprocess, 80);
-}
-
 const sliders = ["threshold", "radius", "morphSize", "dilate"];
 sliders.forEach(id => {
   const el = document.getElementById(id);
   const valEl = document.getElementById(id + "Val");
-  el.addEventListener("input", () => {
-    valEl.textContent = el.value;
-    scheduleReprocess();
-  });
+  el.addEventListener("input", () => { valEl.textContent = el.value; });
 });
 
 showMaskCb.addEventListener("change", () => {
   maskRow.style.display = showMaskCb.checked ? "flex" : "none";
-  autoReprocess();
 });
 
 // --- Params helper ---
@@ -450,7 +432,6 @@ fileInput.addEventListener("change", (e) => {
       statusEl.textContent = `Loaded image: ${img.width}x${img.height}`;
       processBtn.disabled = !cvReady;
       URL.revokeObjectURL(img.src);
-      autoReprocess();
     };
     img.src = URL.createObjectURL(file);
   } else if (file.type.startsWith("video/")) {
