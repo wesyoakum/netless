@@ -15,7 +15,7 @@
 
   .header-bar {
     width: 100%; padding: 1rem 0; text-align: center;
-    background: #e04080; /* change this color each commit to verify deploy */
+    background: #2e86de; /* change this color each commit to verify deploy */
   }
 
   h1 { margin: 0.25rem 0 0.15rem; font-size: 1.8rem; letter-spacing: -0.02em; }
@@ -295,102 +295,109 @@ function processImage() {
   saveBtn.disabled = false;
 }
 
+// --- Seek helper that always resolves ---
+function seekTo(video, time) {
+  return new Promise((resolve) => {
+    const target = Math.min(time, video.duration);
+    // If already at this time (or close enough), resolve immediately
+    if (Math.abs(video.currentTime - target) < 0.001) {
+      resolve();
+      return;
+    }
+    video.onseeked = () => {
+      video.onseeked = null;
+      resolve();
+    };
+    video.currentTime = target;
+  });
+}
+
 // --- Process video frame by frame ---
 async function processVideo() {
   const params = getParams();
+  const fps = 30;
+  const duration = hiddenVideo.duration;
+  const totalFrames = Math.floor(duration * fps);
+  const frameInterval = 1 / fps;
 
-  return new Promise((resolve, reject) => {
-    hiddenVideo.onseeked = null;
-    const fps = 30; // assume 30fps if metadata unavailable
-    const duration = hiddenVideo.duration;
-    const totalFrames = Math.floor(duration * fps);
-    const frameInterval = 1 / fps;
+  const w = hiddenVideo.videoWidth;
+  const h = hiddenVideo.videoHeight;
 
-    // Collect processed frames into an offscreen canvas, then encode
-    const w = hiddenVideo.videoWidth;
-    const h = hiddenVideo.videoHeight;
+  canvasRes.width = w;
+  canvasRes.height = h;
+  if (params.showMask) {
+    canvasMask.width = w;
+    canvasMask.height = h;
+  }
 
-    canvasRes.width = w;
-    canvasRes.height = h;
-    if (params.showMask) {
-      canvasMask.width = w;
-      canvasMask.height = h;
-    }
+  const tmpCanvas = document.createElement("canvas");
+  tmpCanvas.width = w;
+  tmpCanvas.height = h;
+  const tmpCtx = tmpCanvas.getContext("2d");
 
-    // We'll use a temporary canvas for reading video frames
-    const tmpCanvas = document.createElement("canvas");
-    tmpCanvas.width = w;
-    tmpCanvas.height = h;
-    const tmpCtx = tmpCanvas.getContext("2d");
-
-    // MediaRecorder to capture the result canvas as a video
-    const stream = canvasRes.captureStream(0); // 0 = manual frame control
-    const recorder = new MediaRecorder(stream, {
-      mimeType: getSupportedMimeType(),
-      videoBitsPerSecond: 8000000,
-    });
-    const chunks = [];
-    recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+  // MediaRecorder to capture the result canvas as a video
+  const stream = canvasRes.captureStream(0);
+  const recorder = new MediaRecorder(stream, {
+    mimeType: getSupportedMimeType(),
+    videoBitsPerSecond: 8000000,
+  });
+  const chunks = [];
+  recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+  const recorderDone = new Promise((resolve) => {
     recorder.onstop = () => {
-      const blob = new Blob(chunks, { type: recorder.mimeType });
-      window._processedVideoBlob = blob;
+      window._processedVideoBlob = new Blob(chunks, { type: recorder.mimeType });
       resolve();
     };
-    recorder.start();
+  });
+  recorder.start();
 
-    let frameNum = 0;
-    progressBar.style.display = "block";
+  progressBar.style.display = "block";
 
-    function processNextFrame() {
-      if (frameNum >= totalFrames || hiddenVideo.currentTime >= duration) {
-        recorder.stop();
-        progressBar.style.display = "none";
-        statusEl.textContent = "Done. Video ready to save.";
-        saveBtn.disabled = false;
-        return;
-      }
+  // Reset to start before processing
+  await seekTo(hiddenVideo, 0);
 
-      const seekTime = frameNum * frameInterval;
-      hiddenVideo.currentTime = Math.min(seekTime, duration);
+  for (let frameNum = 0; frameNum < totalFrames; frameNum++) {
+    const seekTime = frameNum * frameInterval;
+    await seekTo(hiddenVideo, seekTime);
 
-      hiddenVideo.onseeked = () => {
-        tmpCtx.drawImage(hiddenVideo, 0, 0, w, h);
+    tmpCtx.drawImage(hiddenVideo, 0, 0, w, h);
 
-        const src = cv.imread(tmpCanvas);
-        const netMask = buildNetMask(src, params);
-        const result = inpaintFrame(src, netMask, params.radius);
+    const src = cv.imread(tmpCanvas);
+    const netMask = buildNetMask(src, params);
+    const result = inpaintFrame(src, netMask, params.radius);
 
-        cv.imshow(canvasRes, result);
-        // Request the frame be captured
-        const track = stream.getVideoTracks()[0];
-        if (track.requestFrame) track.requestFrame();
+    cv.imshow(canvasRes, result);
+    const track = stream.getVideoTracks()[0];
+    if (track.requestFrame) track.requestFrame();
 
-        if (params.showMask) {
-          cv.imshow(canvasMask, netMask);
-        }
-
-        // Show original (last frame)
-        canvasOrig.width = w;
-        canvasOrig.height = h;
-        ctxOrig.drawImage(hiddenVideo, 0, 0, w, h);
-
-        src.delete();
-        netMask.delete();
-        result.delete();
-
-        frameNum++;
-        const pct = (frameNum / totalFrames * 100).toFixed(1);
-        progressFill.style.width = pct + "%";
-        progressText.textContent = `Frame ${frameNum} / ${totalFrames} (${pct}%)`;
-        statusEl.textContent = `Processing frame ${frameNum} / ${totalFrames}...`;
-
-        // Yield to the browser between frames
-        setTimeout(processNextFrame, 0);
-      };
+    if (params.showMask) {
+      cv.imshow(canvasMask, netMask);
     }
 
-    processNextFrame();
-  });
+    // Show original on last frame
+    canvasOrig.width = w;
+    canvasOrig.height = h;
+    ctxOrig.drawImage(hiddenVideo, 0, 0, w, h);
+
+    src.delete();
+    netMask.delete();
+    result.delete();
+
+    const pct = ((frameNum + 1) / totalFrames * 100).toFixed(1);
+    progressFill.style.width = pct + "%";
+    progressText.textContent = `Frame ${frameNum + 1} / ${totalFrames} (${pct}%)`;
+    statusEl.textContent = `Processing frame ${frameNum + 1} / ${totalFrames}...`;
+
+    // Yield to browser for UI updates
+    await new Promise((r) => setTimeout(r, 0));
+  }
+
+  recorder.stop();
+  await recorderDone;
+
+  progressBar.style.display = "none";
+  statusEl.textContent = "Done. Video ready to save.";
+  saveBtn.disabled = false;
 }
 
 function getSupportedMimeType() {
