@@ -136,14 +136,14 @@ def main():
     )
     parser.add_argument("input", help="Path to input image or video")
     parser.add_argument("-o", "--output", help="Path to output file (default: <input>_clean.<ext>)")
-    parser.add_argument("--threshold", type=int, default=50,
-                        help="Dark pixel threshold 0-255 (default: 50). Lower = less aggressive.")
-    parser.add_argument("--radius", type=int, default=5,
-                        help="Inpainting radius in pixels (default: 5)")
-    parser.add_argument("--morph-size", type=int, default=3,
-                        help="Morphological kernel size for filtering large blobs (default: 3)")
-    parser.add_argument("--dilate", type=int, default=1,
-                        help="Dilation iterations to cover blurry net edges (default: 1)")
+    parser.add_argument("--threshold", type=int, default=60,
+                        help="Dark pixel threshold 0-255 (default: 60). Lower = less aggressive.")
+    parser.add_argument("--radius", type=int, default=7,
+                        help="Inpainting radius in pixels (default: 7)")
+    parser.add_argument("--morph-size", type=int, default=15,
+                        help="Morphological kernel size for filtering large blobs (default: 15). Must be larger than net strand width.")
+    parser.add_argument("--dilate", type=int, default=2,
+                        help="Dilation iterations to cover blurry net edges (default: 2)")
     parser.add_argument("--save-mask", action="store_true",
                         help="Save the detected net mask for debugging")
     parser.add_argument("--preview", action="store_true",
