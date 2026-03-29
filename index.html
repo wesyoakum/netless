@@ -15,7 +15,7 @@
 
   .header-bar {
     width: 100%; padding: 1rem 0; text-align: center;
-    background: #e67e22; /* change this color each commit to verify deploy */
+    background: #27ae60; /* change this color each commit to verify deploy */
   }
 
   h1 { margin: 0.25rem 0 0.15rem; font-size: 1.8rem; letter-spacing: -0.02em; }
@@ -154,6 +154,12 @@
 </div>
 
 <div class="canvas-area">
+  <div class="canvas-row" id="maskRow" style="display:flex;">
+    <div class="canvas-box" style="max-width: 400px;">
+      <div class="label">Detected Net Mask</div>
+      <canvas id="canvasMask"></canvas>
+    </div>
+  </div>
   <div class="canvas-row">
     <div class="canvas-box">
       <div class="label">Original</div>
@@ -162,12 +168,6 @@
     <div class="canvas-box">
       <div class="label">Result</div>
       <canvas id="canvasResult"></canvas>
-    </div>
-  </div>
-  <div class="canvas-row" id="maskRow" style="display:flex;">
-    <div class="canvas-box" style="max-width: 400px;">
-      <div class="label">Detected Net Mask</div>
-      <canvas id="canvasMask"></canvas>
     </div>
   </div>
 </div>
