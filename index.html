@@ -15,7 +15,7 @@
 
   .header-bar {
     width: 100%; padding: 1rem 0; text-align: center;
-    background: #d35400; /* change this color each commit to verify deploy */
+    background: #2980b9; /* change this color each commit to verify deploy */
   }
 
   h1 { margin: 0.25rem 0 0.15rem; font-size: 1.8rem; letter-spacing: -0.02em; }
@@ -298,15 +298,17 @@ function buildNetMask(src, params) {
 // --- Fill masked pixels ---
 function inpaintFrame(src, netMask, radius, fastMode) {
   if (fastMode) {
-    // Fast: blur the whole image, then blend masked pixels from blurred version
-    const blurred = new cv.Mat();
-    const ksize = Math.max(radius * 4 + 1, 5);
-    cv.GaussianBlur(src, blurred, new cv.Size(ksize, ksize), 0);
-
-    // Copy blurred pixels where mask is set
+    // Iterative diffusion: repeatedly blur, then replace only masked pixels.
+    // Each pass, surrounding clean pixels bleed further into net regions.
     const result = src.clone();
-    blurred.copyTo(result, netMask);
-    blurred.delete();
+    const ksize = Math.max(radius * 4 + 1, 5);
+    const iterations = 15;
+    for (let i = 0; i < iterations; i++) {
+      const blurred = new cv.Mat();
+      cv.GaussianBlur(result, blurred, new cv.Size(ksize, ksize), 0);
+      blurred.copyTo(result, netMask); // only overwrite net pixels
+      blurred.delete();
+    }
     return result;
   }
 
