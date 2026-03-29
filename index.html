@@ -481,34 +481,34 @@ saveBtn.addEventListener("click", () => {
 });
 
 // --- Load OpenCV.js from CDN ---
-function onOpenCvReady() {
-  if (cv.getBuildInformation) {
-    cvReady = true;
-    statusEl.textContent = "Ready. Choose an image or video to get started.";
-    if (currentFile) processBtn.disabled = false;
-  } else {
-    // OpenCV.js may call onReady before it's truly ready; poll briefly
-    cv["onRuntimeInitialized"] = () => {
-      cvReady = true;
-      statusEl.textContent = "Ready. Choose an image or video to get started.";
-      if (currentFile) processBtn.disabled = false;
-    };
-  }
+function markReady() {
+  if (cvReady) return;
+  cvReady = true;
+  statusEl.textContent = "Ready. Choose an image or video to get started.";
+  if (currentFile) processBtn.disabled = false;
 }
+
+function waitForCv() {
+  // Poll until cv.Mat exists (WASM fully initialized)
+  if (typeof cv !== "undefined" && cv.Mat) {
+    markReady();
+    return;
+  }
+  setTimeout(waitForCv, 100);
+}
+
+// Set the callback BEFORE loading the script so we don't miss it
+window.Module = {
+  onRuntimeInitialized: function() { waitForCv(); }
+};
 
 const script = document.createElement("script");
 script.src = "https://docs.opencv.org/4.9.0/opencv.js";
 script.async = true;
 script.onload = () => {
-  if (typeof cv !== "undefined") {
-    if (cv.Mat) {
-      onOpenCvReady();
-    } else if (cv instanceof Promise) {
-      cv.then(() => onOpenCvReady());
-    } else {
-      cv["onRuntimeInitialized"] = onOpenCvReady;
-    }
-  }
+  statusEl.textContent = "Initializing OpenCV (WASM)...";
+  // Fallback: if onRuntimeInitialized never fires, poll for readiness
+  waitForCv();
 };
 script.onerror = () => {
   statusEl.textContent = "Failed to load OpenCV.js. Check your internet connection and try refreshing.";
