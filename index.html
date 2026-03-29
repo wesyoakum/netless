@@ -13,8 +13,13 @@
     display: flex; flex-direction: column; align-items: center;
   }
 
-  h1 { margin: 1.5rem 0 0.25rem; font-size: 1.8rem; letter-spacing: -0.02em; }
-  .subtitle { color: #888; margin-bottom: 1.5rem; font-size: 0.95rem; }
+  .header-bar {
+    width: 100%; padding: 1rem 0; text-align: center;
+    background: #e04080; /* change this color each commit to verify deploy */
+  }
+
+  h1 { margin: 0.25rem 0 0.15rem; font-size: 1.8rem; letter-spacing: -0.02em; }
+  .subtitle { color: rgba(255,255,255,0.7); margin-bottom: 0; font-size: 0.95rem; }
 
   .controls {
     background: #1a1a1a; border: 1px solid #333; border-radius: 10px;
@@ -102,10 +107,12 @@
 </head>
 <body>
 
-<h1>Netless</h1>
-<p class="subtitle">Remove baseball netting from images and videos</p>
+<div class="header-bar">
+  <h1>Netless</h1>
+  <p class="subtitle">Remove baseball netting from images and videos</p>
+</div>
 
-<div class="controls">
+<div class="controls" style="margin-top:1.5rem;">
   <label class="file-label">
     Choose File
     <input type="file" id="fileInput" accept="image/*,video/*">
