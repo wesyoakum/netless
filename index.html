@@ -15,7 +15,7 @@
 
   .header-bar {
     width: 100%; padding: 1rem 0; text-align: center;
-    background: #1abc9c; /* change this color each commit to verify deploy */
+    background: #d35400; /* change this color each commit to verify deploy */
   }
 
   h1 { margin: 0.25rem 0 0.15rem; font-size: 1.8rem; letter-spacing: -0.02em; }
@@ -124,18 +124,18 @@
   </div>
 
   <div class="control-group">
-    <label>Radius <span class="value" id="radiusVal">7</span></label>
-    <input type="range" id="radius" min="1" max="20" value="7">
+    <label>Radius <span class="value" id="radiusVal">0.7%</span></label>
+    <input type="range" id="radius" min="1" max="30" value="7" step="1">
   </div>
 
   <div class="control-group">
-    <label>Morph Size <span class="value" id="morphSizeVal">15</span></label>
-    <input type="range" id="morphSize" min="3" max="51" value="15" step="2">
+    <label>Morph Size <span class="value" id="morphSizeVal">1.5%</span></label>
+    <input type="range" id="morphSize" min="3" max="50" value="15" step="1">
   </div>
 
   <div class="control-group">
-    <label>Dilate <span class="value" id="dilateVal">2</span></label>
-    <input type="range" id="dilate" min="0" max="10" value="2">
+    <label>Dilate <span class="value" id="dilateVal">0.2%</span></label>
+    <input type="range" id="dilate" min="0" max="10" value="2" step="1">
   </div>
 
   <div class="control-group">
@@ -211,11 +211,16 @@ const hiddenVideo = document.getElementById("hiddenVideo");
 
 const fastModeCb = document.getElementById("fastMode");
 
-const sliders = ["threshold", "radius", "morphSize", "dilate"];
-sliders.forEach(id => {
+// Slider value displays — threshold is absolute, others show as %
+const thresholdEl = document.getElementById("threshold");
+const thresholdValEl = document.getElementById("thresholdVal");
+thresholdEl.addEventListener("input", () => { thresholdValEl.textContent = thresholdEl.value; });
+
+const pctSliders = ["radius", "morphSize", "dilate"];
+pctSliders.forEach(id => {
   const el = document.getElementById(id);
   const valEl = document.getElementById(id + "Val");
-  el.addEventListener("input", () => { valEl.textContent = el.value; });
+  el.addEventListener("input", () => { valEl.textContent = (el.value / 10).toFixed(1) + "%"; });
 });
 
 const scaleEl = document.getElementById("scale");
@@ -227,15 +232,33 @@ showMaskCb.addEventListener("change", () => {
 });
 
 // --- Params helper ---
+// radius, morphSize, dilate are stored as tenths-of-percent (slider value / 10 = %)
+// Actual pixel values are computed from the shorter image dimension at process time.
 function getParams() {
   return {
-    threshold: parseInt(document.getElementById("threshold").value),
-    radius: parseInt(document.getElementById("radius").value),
-    morphSize: parseInt(document.getElementById("morphSize").value),
-    dilate: parseInt(document.getElementById("dilate").value),
+    threshold: parseInt(thresholdEl.value),
+    radiusPct: parseInt(document.getElementById("radius").value) / 1000,
+    morphSizePct: parseInt(document.getElementById("morphSize").value) / 1000,
+    dilatePct: parseInt(document.getElementById("dilate").value) / 1000,
     scale: parseInt(scaleEl.value) / 100,
     fastMode: fastModeCb.checked,
     showMask: showMaskCb.checked,
+  };
+}
+
+// Convert percentage params to pixel values based on image dimensions
+function resolveParams(params, width, height) {
+  const ref = Math.min(width, height);
+  let morphSize = Math.max(3, Math.round(params.morphSizePct * ref));
+  if (morphSize % 2 === 0) morphSize++; // must be odd
+  return {
+    threshold: params.threshold,
+    radius: Math.max(1, Math.round(params.radiusPct * ref)),
+    morphSize: morphSize,
+    dilate: Math.max(0, Math.round(params.dilatePct * ref)),
+    fastMode: params.fastMode,
+    showMask: params.showMask,
+    scale: params.scale,
   };
 }
 
@@ -304,28 +327,31 @@ function inpaintFrame(src, netMask, radius, fastMode) {
 
 // --- Process single image ---
 function processImage() {
-  const params = getParams();
+  const rawParams = getParams();
   const t0 = performance.now();
 
   const fullSrc = cv.imread(canvasOrig);
 
   // Downscale if scale < 1
   let src;
-  if (params.scale < 1) {
+  if (rawParams.scale < 1) {
     src = new cv.Mat();
-    const w = Math.round(fullSrc.cols * params.scale);
-    const h = Math.round(fullSrc.rows * params.scale);
+    const w = Math.round(fullSrc.cols * rawParams.scale);
+    const h = Math.round(fullSrc.rows * rawParams.scale);
     cv.resize(fullSrc, src, new cv.Size(w, h), 0, 0, cv.INTER_AREA);
   } else {
     src = fullSrc.clone();
   }
+
+  // Resolve % params to pixel values based on working resolution
+  const params = resolveParams(rawParams, src.cols, src.rows);
 
   const netMask = buildNetMask(src, params);
   const result = inpaintFrame(src, netMask, params.radius, params.fastMode);
 
   // Upscale result back to original size if needed
   let finalResult;
-  if (params.scale < 1) {
+  if (rawParams.scale < 1) {
     finalResult = new cv.Mat();
     cv.resize(result, finalResult, new cv.Size(fullSrc.cols, fullSrc.rows), 0, 0, cv.INTER_LINEAR);
   } else {
@@ -336,7 +362,7 @@ function processImage() {
 
   if (params.showMask) {
     // Upscale mask for display
-    if (params.scale < 1) {
+    if (rawParams.scale < 1) {
       const fullMask = new cv.Mat();
       cv.resize(netMask, fullMask, new cv.Size(fullSrc.cols, fullSrc.rows), 0, 0, cv.INTER_NEAREST);
       cv.imshow(canvasMask, fullMask);
@@ -376,7 +402,7 @@ function seekTo(video, time) {
 
 // --- Process video frame by frame ---
 async function processVideo() {
-  const params = getParams();
+  const rawParams = getParams();
   const fps = 30;
   const duration = hiddenVideo.duration;
   const totalFrames = Math.floor(duration * fps);
@@ -384,6 +410,11 @@ async function processVideo() {
 
   const w = hiddenVideo.videoWidth;
   const h = hiddenVideo.videoHeight;
+
+  // Compute working resolution and resolve params once
+  const workW = Math.round(w * rawParams.scale);
+  const workH = Math.round(h * rawParams.scale);
+  const params = resolveParams(rawParams, workW, workH);
 
   canvasRes.width = w;
   canvasRes.height = h;
@@ -426,11 +457,9 @@ async function processVideo() {
 
     const fullSrc = cv.imread(tmpCanvas);
     let src;
-    if (params.scale < 1) {
+    if (rawParams.scale < 1) {
       src = new cv.Mat();
-      const sw = Math.round(w * params.scale);
-      const sh = Math.round(h * params.scale);
-      cv.resize(fullSrc, src, new cv.Size(sw, sh), 0, 0, cv.INTER_AREA);
+      cv.resize(fullSrc, src, new cv.Size(workW, workH), 0, 0, cv.INTER_AREA);
     } else {
       src = fullSrc.clone();
     }
@@ -439,7 +468,7 @@ async function processVideo() {
     const result = inpaintFrame(src, netMask, params.radius, params.fastMode);
 
     let finalResult;
-    if (params.scale < 1) {
+    if (rawParams.scale < 1) {
       finalResult = new cv.Mat();
       cv.resize(result, finalResult, new cv.Size(w, h), 0, 0, cv.INTER_LINEAR);
     } else {
