@@ -15,7 +15,7 @@
 
   .header-bar {
     width: 100%; padding: 1rem 0; text-align: center;
-    background: #c0392b; /* change this color each commit to verify deploy */
+    background: #1abc9c; /* change this color each commit to verify deploy */
   }
 
   h1 { margin: 0.25rem 0 0.15rem; font-size: 1.8rem; letter-spacing: -0.02em; }
@@ -138,6 +138,15 @@
     <input type="range" id="dilate" min="0" max="10" value="2">
   </div>
 
+  <div class="control-group">
+    <label>Scale <span class="value" id="scaleVal">50%</span></label>
+    <input type="range" id="scale" min="25" max="100" value="50" step="25">
+  </div>
+
+  <div class="checkbox-group">
+    <input type="checkbox" id="fastMode" checked> <label for="fastMode">Fast Mode</label>
+  </div>
+
   <div class="checkbox-group">
     <input type="checkbox" id="showMask" checked> <label for="showMask">Show Mask</label>
   </div>
@@ -200,12 +209,18 @@ const ctxMask = canvasMask.getContext("2d");
 
 const hiddenVideo = document.getElementById("hiddenVideo");
 
+const fastModeCb = document.getElementById("fastMode");
+
 const sliders = ["threshold", "radius", "morphSize", "dilate"];
 sliders.forEach(id => {
   const el = document.getElementById(id);
   const valEl = document.getElementById(id + "Val");
   el.addEventListener("input", () => { valEl.textContent = el.value; });
 });
+
+const scaleEl = document.getElementById("scale");
+const scaleValEl = document.getElementById("scaleVal");
+scaleEl.addEventListener("input", () => { scaleValEl.textContent = scaleEl.value + "%"; });
 
 showMaskCb.addEventListener("change", () => {
   maskRow.style.display = showMaskCb.checked ? "flex" : "none";
@@ -218,6 +233,8 @@ function getParams() {
     radius: parseInt(document.getElementById("radius").value),
     morphSize: parseInt(document.getElementById("morphSize").value),
     dilate: parseInt(document.getElementById("dilate").value),
+    scale: parseInt(scaleEl.value) / 100,
+    fastMode: fastModeCb.checked,
     showMask: showMaskCb.checked,
   };
 }
@@ -255,20 +272,32 @@ function buildNetMask(src, params) {
   return netMask;
 }
 
-// --- Inpaint frame ---
-function inpaintFrame(src, netMask, radius) {
-  // inpaint needs 3-channel input
+// --- Fill masked pixels ---
+function inpaintFrame(src, netMask, radius, fastMode) {
+  if (fastMode) {
+    // Fast: blur the whole image, then blend masked pixels from blurred version
+    const blurred = new cv.Mat();
+    const ksize = Math.max(radius * 4 + 1, 5);
+    cv.GaussianBlur(src, blurred, new cv.Size(ksize, ksize), 0);
+
+    // Copy blurred pixels where mask is set
+    const result = src.clone();
+    blurred.copyTo(result, netMask);
+    blurred.delete();
+    return result;
+  }
+
+  // Quality: Telea inpainting (slower)
   const bgr = new cv.Mat();
   cv.cvtColor(src, bgr, cv.COLOR_RGBA2BGR);
 
-  const result = new cv.Mat();
-  cv.inpaint(bgr, netMask, result, radius, cv.INPAINT_TELEA);
+  const inpainted = new cv.Mat();
+  cv.inpaint(bgr, netMask, inpainted, radius, cv.INPAINT_TELEA);
   bgr.delete();
 
-  // Convert back to RGBA for canvas display
   const rgba = new cv.Mat();
-  cv.cvtColor(result, rgba, cv.COLOR_BGR2RGBA);
-  result.delete();
+  cv.cvtColor(inpainted, rgba, cv.COLOR_BGR2RGBA);
+  inpainted.delete();
 
   return rgba;
 }
@@ -276,22 +305,55 @@ function inpaintFrame(src, netMask, radius) {
 // --- Process single image ---
 function processImage() {
   const params = getParams();
+  const t0 = performance.now();
 
-  const src = cv.imread(canvasOrig);
-  const netMask = buildNetMask(src, params);
-  const result = inpaintFrame(src, netMask, params.radius);
+  const fullSrc = cv.imread(canvasOrig);
 
-  cv.imshow(canvasRes, result);
-
-  if (params.showMask) {
-    cv.imshow(canvasMask, netMask);
+  // Downscale if scale < 1
+  let src;
+  if (params.scale < 1) {
+    src = new cv.Mat();
+    const w = Math.round(fullSrc.cols * params.scale);
+    const h = Math.round(fullSrc.rows * params.scale);
+    cv.resize(fullSrc, src, new cv.Size(w, h), 0, 0, cv.INTER_AREA);
+  } else {
+    src = fullSrc.clone();
   }
 
+  const netMask = buildNetMask(src, params);
+  const result = inpaintFrame(src, netMask, params.radius, params.fastMode);
+
+  // Upscale result back to original size if needed
+  let finalResult;
+  if (params.scale < 1) {
+    finalResult = new cv.Mat();
+    cv.resize(result, finalResult, new cv.Size(fullSrc.cols, fullSrc.rows), 0, 0, cv.INTER_LINEAR);
+  } else {
+    finalResult = result.clone();
+  }
+
+  cv.imshow(canvasRes, finalResult);
+
+  if (params.showMask) {
+    // Upscale mask for display
+    if (params.scale < 1) {
+      const fullMask = new cv.Mat();
+      cv.resize(netMask, fullMask, new cv.Size(fullSrc.cols, fullSrc.rows), 0, 0, cv.INTER_NEAREST);
+      cv.imshow(canvasMask, fullMask);
+      fullMask.delete();
+    } else {
+      cv.imshow(canvasMask, netMask);
+    }
+  }
+
+  const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
+  statusEl.textContent = `Done in ${elapsed}s.`;
+
+  fullSrc.delete();
   src.delete();
   netMask.delete();
   result.delete();
-
-  statusEl.textContent = "Done.";
+  finalResult.delete();
   saveBtn.disabled = false;
 }
 
@@ -362,11 +424,29 @@ async function processVideo() {
 
     tmpCtx.drawImage(hiddenVideo, 0, 0, w, h);
 
-    const src = cv.imread(tmpCanvas);
-    const netMask = buildNetMask(src, params);
-    const result = inpaintFrame(src, netMask, params.radius);
+    const fullSrc = cv.imread(tmpCanvas);
+    let src;
+    if (params.scale < 1) {
+      src = new cv.Mat();
+      const sw = Math.round(w * params.scale);
+      const sh = Math.round(h * params.scale);
+      cv.resize(fullSrc, src, new cv.Size(sw, sh), 0, 0, cv.INTER_AREA);
+    } else {
+      src = fullSrc.clone();
+    }
 
-    cv.imshow(canvasRes, result);
+    const netMask = buildNetMask(src, params);
+    const result = inpaintFrame(src, netMask, params.radius, params.fastMode);
+
+    let finalResult;
+    if (params.scale < 1) {
+      finalResult = new cv.Mat();
+      cv.resize(result, finalResult, new cv.Size(w, h), 0, 0, cv.INTER_LINEAR);
+    } else {
+      finalResult = result.clone();
+    }
+
+    cv.imshow(canvasRes, finalResult);
     const track = stream.getVideoTracks()[0];
     if (track.requestFrame) track.requestFrame();
 
@@ -379,9 +459,11 @@ async function processVideo() {
     canvasOrig.height = h;
     ctxOrig.drawImage(hiddenVideo, 0, 0, w, h);
 
+    fullSrc.delete();
     src.delete();
     netMask.delete();
     result.delete();
+    finalResult.delete();
 
     const pct = ((frameNum + 1) / totalFrames * 100).toFixed(1);
     progressFill.style.width = pct + "%";
