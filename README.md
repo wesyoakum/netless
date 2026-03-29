@@ -13,15 +13,29 @@ than the field).
 3. **Dilation** — the mask is expanded slightly to cover soft/blurry net edges caused by shallow depth of field
 4. **Inpainting** — masked pixels are filled in using OpenCV's Telea algorithm, which reconstructs the area from surrounding pixels
 
-## Installation
+## Web App
+
+Open `index.html` in a browser — no server or installation required. OpenCV.js
+loads from CDN and everything runs client-side.
+
+1. Choose an image or video file
+2. Adjust sliders (threshold, radius, morph size, dilate)
+3. Click **Process**
+4. Click **Save Result** to download
+
+Check **Show Mask** to see exactly which pixels are detected as netting.
+
+## CLI Tool
+
+### Installation
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## Usage
+### Usage
 
-### Images
+#### Images
 
 ```bash
 # Basic usage — outputs photo_clean.jpg
@@ -37,7 +51,7 @@ python remove_net.py photo.jpg --save-mask
 python remove_net.py photo.jpg --preview
 ```
 
-### Videos
+#### Videos
 
 ```bash
 # Process a video — outputs game_clean.mp4
