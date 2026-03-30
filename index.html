@@ -15,7 +15,7 @@
 
   .header-bar {
     width: 100%; padding: 1rem 0; text-align: center;
-    background: #16a085; /* change this color each commit to verify deploy */
+    background: #c0392b; /* change this color each commit to verify deploy */
   }
 
   h1 { margin: 0.25rem 0 0.15rem; font-size: 1.8rem; letter-spacing: -0.02em; }
@@ -713,55 +713,38 @@ function fillFFT(src, netMask, params) {
     }
 
     for (let iter = 0; iter < iterations; iter++) {
-      // Build complex mat from current real values
-      const reMat = cv.matFromArray(dftRows, dftCols, cv.CV_32F, realArr);
-      const imMat = cv.Mat.zeros(dftRows, dftCols, cv.CV_32F);
-      const pv = new cv.MatVector();
-      pv.push_back(reMat);
-      pv.push_back(imMat);
-      const complexMat = new cv.Mat();
-      cv.merge(pv, complexMat);
+      // Build 2-channel complex mat directly (avoids MatVector ownership issues)
+      const complexMat = new cv.Mat(dftRows, dftCols, cv.CV_32FC2);
+      const cData = complexMat.data32F;
+      for (let i = 0; i < dftSize; i++) {
+        cData[i * 2] = realArr[i];     // real
+        cData[i * 2 + 1] = 0;          // imaginary
+      }
 
       // Forward DFT
       cv.dft(complexMat, complexMat);
 
-      // Split, apply low-pass, read back
-      const sv = new cv.MatVector();
-      cv.split(complexMat, sv);
-      const reOut = sv.get(0);
-      const imOut = sv.get(1);
-      const reD = reOut.data32F;
-      const imD = imOut.data32F;
+      // Apply low-pass filter directly on the 2-channel data
+      const fData = complexMat.data32F;
       for (let i = 0; i < dftSize; i++) {
-        reD[i] *= lpFilter[i];
-        imD[i] *= lpFilter[i];
+        fData[i * 2] *= lpFilter[i];
+        fData[i * 2 + 1] *= lpFilter[i];
       }
 
-      // Rebuild and inverse DFT
-      const fv = new cv.MatVector();
-      fv.push_back(reOut);
-      fv.push_back(imOut);
-      const filtMat = new cv.Mat();
-      cv.merge(fv, filtMat);
-      cv.dft(filtMat, filtMat, cv.DFT_INVERSE | cv.DFT_SCALE);
+      // Inverse DFT
+      cv.dft(complexMat, complexMat, cv.DFT_INVERSE | cv.DFT_SCALE);
 
-      // Extract real part
-      const ov = new cv.MatVector();
-      cv.split(filtMat, ov);
-      const resultReal = ov.get(0).data32F;
-
-      // Update realArr: masked pixels get FFT result, known pixels get original
+      // Read real part back, enforce known pixel constraint
+      const outData = complexMat.data32F;
       for (let y = 0; y < h; y++) {
         for (let x = 0; x < w; x++) {
           const di = y * dftCols + x;
           const si = y * w + x;
-          realArr[di] = isMasked[si] ? resultReal[di] : origPixels[si];
+          realArr[di] = isMasked[si] ? outData[di * 2] : origPixels[si];
         }
       }
 
-      // Cleanup everything this iteration
-      reMat.delete(); imMat.delete(); pv.delete(); complexMat.delete();
-      sv.delete(); fv.delete(); filtMat.delete(); ov.delete();
+      complexMat.delete();
     }
 
     // Extract result as uint8 array
