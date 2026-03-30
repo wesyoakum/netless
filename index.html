@@ -15,7 +15,7 @@
 
   .header-bar {
     width: 100%; padding: 1rem 0; text-align: center;
-    background: #3498db; /* change this color each commit to verify deploy */
+    background: #e056a0; /* change this color each commit to verify deploy */
   }
 
   h1 { margin: 0.25rem 0 0.15rem; font-size: 1.8rem; letter-spacing: -0.02em; }
@@ -25,6 +25,12 @@
     background: #1a1a1a; border: 1px solid #333; border-radius: 10px;
     padding: 1.25rem 1.5rem; width: 100%; max-width: 820px;
     display: flex; flex-wrap: wrap; gap: 1rem; align-items: end;
+  }
+
+  .controls .section-label {
+    width: 100%; font-size: 0.7rem; text-transform: uppercase;
+    letter-spacing: 0.08em; color: #666; border-bottom: 1px solid #333;
+    padding-bottom: 0.3rem; margin-bottom: -0.25rem;
   }
 
   .control-group { display: flex; flex-direction: column; gap: 0.3rem; }
@@ -119,13 +125,20 @@
   </label>
 
   <div class="control-group">
-    <label>Threshold <span class="value" id="thresholdVal">60</span></label>
-    <input type="range" id="threshold" min="10" max="150" value="60">
+    <label>Scale <span class="value" id="scaleVal">50%</span></label>
+    <input type="range" id="scale" min="25" max="100" value="50" step="25">
   </div>
 
+  <div class="checkbox-group">
+    <input type="checkbox" id="showMask" checked> <label for="showMask">Show Mask</label>
+  </div>
+
+  <!-- Mask Detection -->
+  <div class="section-label">Mask Detection (updates live)</div>
+
   <div class="control-group">
-    <label>Radius <span class="value" id="radiusVal">0.7%</span></label>
-    <input type="range" id="radius" min="1" max="30" value="7" step="1">
+    <label>Threshold <span class="value" id="thresholdVal">60</span></label>
+    <input type="range" id="threshold" min="10" max="150" value="60">
   </div>
 
   <div class="control-group">
@@ -138,12 +151,22 @@
     <input type="range" id="dilate" min="0" max="10" value="2" step="1">
   </div>
 
-  <div class="control-group">
-    <label>Scale <span class="value" id="scaleVal">50%</span></label>
-    <input type="range" id="scale" min="25" max="100" value="50" step="25">
+  <div class="checkbox-group">
+    <input type="checkbox" id="lineFilter"> <label for="lineFilter">Line Filter</label>
   </div>
 
-  <div class="control-group">
+  <div class="checkbox-group">
+    <input type="checkbox" id="connectedFilter"> <label for="connectedFilter">Connected Only</label>
+  </div>
+
+  <!-- Infill -->
+  <div class="section-label">Infill (click Process)</div>
+
+  <div class="checkbox-group">
+    <input type="checkbox" id="infillEnabled" checked> <label for="infillEnabled">Enable Infill</label>
+  </div>
+
+  <div class="control-group infill-ctrl">
     <label>Method</label>
     <select id="method" style="padding:0.35rem 0.5rem; border-radius:4px; background:#333; color:#eee; border:1px solid #555; font-size:0.85rem;">
       <option value="diffusion">Diffusion (fast)</option>
@@ -151,6 +174,11 @@
       <option value="ns">Navier-Stokes</option>
       <option value="fft">FFT (spectral)</option>
     </select>
+  </div>
+
+  <div class="control-group infill-ctrl">
+    <label>Radius <span class="value" id="radiusVal">0.7%</span></label>
+    <input type="range" id="radius" min="1" max="30" value="7" step="1">
   </div>
 
   <div class="control-group diffusion-only" style="display:none;">
@@ -161,18 +189,6 @@
   <div class="control-group diffusion-only" style="display:none;">
     <label>Iterations <span class="value" id="diffIterVal">15</span></label>
     <input type="range" id="diffIter" min="1" max="50" value="15">
-  </div>
-
-  <div class="checkbox-group">
-    <input type="checkbox" id="lineFilter"> <label for="lineFilter">Line Filter</label>
-  </div>
-
-  <div class="checkbox-group">
-    <input type="checkbox" id="connectedFilter"> <label for="connectedFilter">Connected Only</label>
-  </div>
-
-  <div class="checkbox-group">
-    <input type="checkbox" id="showMask" checked> <label for="showMask">Show Mask</label>
   </div>
 
   <button class="btn btn-process" id="processBtn" disabled>Process</button>
@@ -205,6 +221,40 @@
   </div>
 </div>
 
+<div style="width:100%; max-width:820px; margin: 1.5rem 0 2rem; padding: 0 0.5rem;">
+  <details open>
+    <summary style="cursor:pointer; font-size:0.95rem; color:#aaa; margin-bottom:0.75rem;">Parameter &amp; Method Reference</summary>
+
+    <div style="color:#999; font-size:0.82rem; line-height:1.6;">
+      <h3 style="color:#ccc; font-size:0.9rem; margin:0.75rem 0 0.4rem;">Mask Detection Parameters</h3>
+      <p>These control which pixels are identified as netting. The mask updates live as you adjust them.</p>
+      <ul style="padding-left:1.2rem; margin:0.4rem 0;">
+        <li><strong style="color:#ddd;">Threshold</strong> &mdash; Brightness cutoff (0&ndash;255). Pixels darker than this value are candidates for netting. Raise to catch more of the net; lower if non-net dark areas (jerseys, shadows) are being selected.</li>
+        <li><strong style="color:#ddd;">Morph Size</strong> &mdash; Size of the morphological opening kernel, as a percentage of the image&rsquo;s shorter dimension. Opening erodes then dilates the mask &mdash; structures thinner than the kernel get removed, large blobs survive. The mask is then subtracted to isolate only the thin structures (the net). Must be larger than the net strand width.</li>
+        <li><strong style="color:#ddd;">Dilate</strong> &mdash; Expands the mask outward by this percentage of the shorter dimension. Covers the soft, blurry edges of the out-of-focus netting that the threshold alone may miss.</li>
+        <li><strong style="color:#ddd;">Line Filter</strong> &mdash; Runs a Hough Line Transform on the mask and keeps only pixels near detected line segments. Rejects amorphous dark blobs that aren&rsquo;t line-shaped (people, equipment, shadows).</li>
+        <li><strong style="color:#ddd;">Connected Only</strong> &mdash; Keeps only the largest connected region in the mask. The net is one continuous structure, so isolated small blobs (not part of the net) get removed.</li>
+      </ul>
+
+      <h3 style="color:#ccc; font-size:0.9rem; margin:0.75rem 0 0.4rem;">Infill Methods</h3>
+      <p>These control how the masked (net) pixels are replaced. Click Process to apply.</p>
+      <ul style="padding-left:1.2rem; margin:0.4rem 0;">
+        <li><strong style="color:#ddd;">Diffusion</strong> &mdash; Iteratively blurs the image and replaces only masked pixels each pass. Surrounding colors gradually flood into net regions. Fastest method. Kernel controls the blur size per pass; Iterations controls how many passes.</li>
+        <li><strong style="color:#ddd;">Telea</strong> &mdash; Fast Marching Method inpainting. Fills from the mask boundary inward, weighting nearer pixels more heavily. Good balance of speed and quality. Radius controls how far from each masked pixel the algorithm looks for source colors.</li>
+        <li><strong style="color:#ddd;">Navier-Stokes</strong> &mdash; Fluid dynamics model that propagates both color and gradient direction into masked regions. Preserves edge continuity better than Telea. Similar speed. Uses the same Radius parameter.</li>
+        <li><strong style="color:#ddd;">FFT (Spectral)</strong> &mdash; Transforms each color channel to the frequency domain, suppresses high-energy periodic peaks (the net&rsquo;s repeating pattern), and inverse-transforms. Blends the result into masked pixels only. Best for dense, regular netting patterns.</li>
+      </ul>
+
+      <h3 style="color:#ccc; font-size:0.9rem; margin:0.75rem 0 0.4rem;">General</h3>
+      <ul style="padding-left:1.2rem; margin:0.4rem 0;">
+        <li><strong style="color:#ddd;">Scale</strong> &mdash; Processes at a reduced resolution then upscales. Lower scale = much faster. Use 100% for final output quality.</li>
+        <li><strong style="color:#ddd;">Radius</strong> &mdash; Inpainting radius as a percentage of the shorter dimension. Larger values fill wider gaps but may soften details.</li>
+        <li><strong style="color:#ddd;">Enable Infill</strong> &mdash; When off, only the mask is computed and displayed. Useful for dialing in mask parameters without waiting for the infill step.</li>
+      </ul>
+    </div>
+  </details>
+</div>
+
 <video id="hiddenVideo" class="hidden-video" muted></video>
 
 <script>
@@ -235,49 +285,106 @@ const hiddenVideo = document.getElementById("hiddenVideo");
 
 const methodEl = document.getElementById("method");
 const diffusionCtrls = document.querySelectorAll(".diffusion-only");
+const infillCtrls = document.querySelectorAll(".infill-ctrl");
 const diffKernelEl = document.getElementById("diffKernel");
 const diffKernelValEl = document.getElementById("diffKernelVal");
 const diffIterEl = document.getElementById("diffIter");
 const diffIterValEl = document.getElementById("diffIterVal");
+const infillEnabledCb = document.getElementById("infillEnabled");
+const lineFilterCb = document.getElementById("lineFilter");
+const connectedFilterCb = document.getElementById("connectedFilter");
 
 diffKernelEl.addEventListener("input", () => { diffKernelValEl.textContent = diffKernelEl.value; });
 diffIterEl.addEventListener("input", () => { diffIterValEl.textContent = diffIterEl.value; });
 
-methodEl.addEventListener("change", () => {
-  const show = methodEl.value === "diffusion";
-  diffusionCtrls.forEach(el => { el.style.display = show ? "flex" : "none"; });
-});
+function updateInfillVisibility() {
+  const on = infillEnabledCb.checked;
+  infillCtrls.forEach(el => { el.style.display = on ? "flex" : "none"; });
+  diffusionCtrls.forEach(el => {
+    el.style.display = (on && methodEl.value === "diffusion") ? "flex" : "none";
+  });
+}
+methodEl.addEventListener("change", updateInfillVisibility);
+infillEnabledCb.addEventListener("change", updateInfillVisibility);
+updateInfillVisibility();
 
 // Slider value displays — threshold is absolute, others show as %
 const thresholdEl = document.getElementById("threshold");
 const thresholdValEl = document.getElementById("thresholdVal");
-thresholdEl.addEventListener("input", () => { thresholdValEl.textContent = thresholdEl.value; });
+thresholdEl.addEventListener("input", () => { thresholdValEl.textContent = thresholdEl.value; scheduleMaskUpdate(); });
 
-const pctSliders = ["radius", "morphSize", "dilate"];
+const pctSliders = ["morphSize", "dilate"];
 pctSliders.forEach(id => {
   const el = document.getElementById(id);
   const valEl = document.getElementById(id + "Val");
-  el.addEventListener("input", () => { valEl.textContent = (el.value / 10).toFixed(1) + "%"; });
+  el.addEventListener("input", () => {
+    valEl.textContent = (el.value / 10).toFixed(1) + "%";
+    scheduleMaskUpdate();
+  });
 });
+
+// Radius is infill-only, no live mask update
+const radiusEl = document.getElementById("radius");
+const radiusValEl = document.getElementById("radiusVal");
+radiusEl.addEventListener("input", () => { radiusValEl.textContent = (radiusEl.value / 10).toFixed(1) + "%"; });
 
 const scaleEl = document.getElementById("scale");
 const scaleValEl = document.getElementById("scaleVal");
-scaleEl.addEventListener("input", () => { scaleValEl.textContent = scaleEl.value + "%"; });
+scaleEl.addEventListener("input", () => { scaleValEl.textContent = scaleEl.value + "%"; scheduleMaskUpdate(); });
 
 showMaskCb.addEventListener("change", () => {
   maskRow.style.display = showMaskCb.checked ? "flex" : "none";
+  if (showMaskCb.checked) scheduleMaskUpdate();
 });
 
-// --- Params helper ---
-// radius, morphSize, dilate are stored as tenths-of-percent (slider value / 10 = %)
-// Actual pixel values are computed from the shorter image dimension at process time.
-const lineFilterCb = document.getElementById("lineFilter");
-const connectedFilterCb = document.getElementById("connectedFilter");
+lineFilterCb.addEventListener("change", scheduleMaskUpdate);
+connectedFilterCb.addEventListener("change", scheduleMaskUpdate);
 
+// --- Live mask update (debounced) ---
+let maskTimer = null;
+function scheduleMaskUpdate() {
+  clearTimeout(maskTimer);
+  maskTimer = setTimeout(updateMaskOnly, 100);
+}
+
+function updateMaskOnly() {
+  if (!cvReady || !currentFile || processing) return;
+  if (!currentFile.type.startsWith("image/")) return;
+
+  const rawParams = getParams();
+  const fullSrc = cv.imread(canvasOrig);
+  let src;
+  if (rawParams.scale < 1) {
+    src = new cv.Mat();
+    const w = Math.round(fullSrc.cols * rawParams.scale);
+    const h = Math.round(fullSrc.rows * rawParams.scale);
+    cv.resize(fullSrc, src, new cv.Size(w, h), 0, 0, cv.INTER_AREA);
+  } else {
+    src = fullSrc.clone();
+  }
+  const params = resolveParams(rawParams, src.cols, src.rows);
+  const netMask = buildNetMask(src, params);
+
+  if (params.showMask) {
+    if (rawParams.scale < 1) {
+      const fullMask = new cv.Mat();
+      cv.resize(netMask, fullMask, new cv.Size(fullSrc.cols, fullSrc.rows), 0, 0, cv.INTER_NEAREST);
+      cv.imshow(canvasMask, fullMask);
+      fullMask.delete();
+    } else {
+      cv.imshow(canvasMask, netMask);
+    }
+  }
+
+  fullSrc.delete(); src.delete(); netMask.delete();
+  statusEl.textContent = "Mask updated. Click Process to run infill.";
+}
+
+// --- Params helper ---
 function getParams() {
   return {
     threshold: parseInt(thresholdEl.value),
-    radiusPct: parseInt(document.getElementById("radius").value) / 1000,
+    radiusPct: parseInt(radiusEl.value) / 1000,
     morphSizePct: parseInt(document.getElementById("morphSize").value) / 1000,
     dilatePct: parseInt(document.getElementById("dilate").value) / 1000,
     scale: parseInt(scaleEl.value) / 100,
@@ -286,15 +393,15 @@ function getParams() {
     diffIter: parseInt(diffIterEl.value),
     lineFilter: lineFilterCb.checked,
     connectedFilter: connectedFilterCb.checked,
+    infillEnabled: infillEnabledCb.checked,
     showMask: showMaskCb.checked,
   };
 }
 
-// Convert percentage params to pixel values based on image dimensions
 function resolveParams(params, width, height) {
   const ref = Math.min(width, height);
   let morphSize = Math.max(3, Math.round(params.morphSizePct * ref));
-  if (morphSize % 2 === 0) morphSize++; // must be odd
+  if (morphSize % 2 === 0) morphSize++;
   return {
     threshold: params.threshold,
     radius: Math.max(1, Math.round(params.radiusPct * ref)),
@@ -305,6 +412,7 @@ function resolveParams(params, width, height) {
     diffIter: params.diffIter,
     lineFilter: params.lineFilter,
     connectedFilter: params.connectedFilter,
+    infillEnabled: params.infillEnabled,
     showMask: params.showMask,
     scale: params.scale,
   };
@@ -601,7 +709,6 @@ function processImage() {
 
   const fullSrc = cv.imread(canvasOrig);
 
-  // Downscale if scale < 1
   let src;
   if (rawParams.scale < 1) {
     src = new cv.Mat();
@@ -612,25 +719,11 @@ function processImage() {
     src = fullSrc.clone();
   }
 
-  // Resolve % params to pixel values based on working resolution
   const params = resolveParams(rawParams, src.cols, src.rows);
-
   const netMask = buildNetMask(src, params);
-  const result = fillFrame(src, netMask, params);
 
-  // Upscale result back to original size if needed
-  let finalResult;
-  if (rawParams.scale < 1) {
-    finalResult = new cv.Mat();
-    cv.resize(result, finalResult, new cv.Size(fullSrc.cols, fullSrc.rows), 0, 0, cv.INTER_LINEAR);
-  } else {
-    finalResult = result.clone();
-  }
-
-  cv.imshow(canvasRes, finalResult);
-
+  // Show mask
   if (params.showMask) {
-    // Upscale mask for display
     if (rawParams.scale < 1) {
       const fullMask = new cv.Mat();
       cv.resize(netMask, fullMask, new cv.Size(fullSrc.cols, fullSrc.rows), 0, 0, cv.INTER_NEAREST);
@@ -641,15 +734,35 @@ function processImage() {
     }
   }
 
-  const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
-  statusEl.textContent = `Done in ${elapsed}s.`;
+  // Infill (or just show original if disabled)
+  if (params.infillEnabled) {
+    const result = fillFrame(src, netMask, params);
+
+    let finalResult;
+    if (rawParams.scale < 1) {
+      finalResult = new cv.Mat();
+      cv.resize(result, finalResult, new cv.Size(fullSrc.cols, fullSrc.rows), 0, 0, cv.INTER_LINEAR);
+    } else {
+      finalResult = result.clone();
+    }
+
+    cv.imshow(canvasRes, finalResult);
+    result.delete();
+    finalResult.delete();
+
+    const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
+    statusEl.textContent = `Done in ${elapsed}s.`;
+    saveBtn.disabled = false;
+  } else {
+    // Copy original to result canvas so it's clear infill is off
+    cv.imshow(canvasRes, fullSrc);
+    statusEl.textContent = "Mask updated. Infill is off.";
+    saveBtn.disabled = true;
+  }
 
   fullSrc.delete();
   src.delete();
   netMask.delete();
-  result.delete();
-  finalResult.delete();
-  saveBtn.disabled = false;
 }
 
 // --- Seek helper that always resolves ---
@@ -734,14 +847,19 @@ async function processVideo() {
     }
 
     const netMask = buildNetMask(src, params);
-    const result = fillFrame(src, netMask, params);
 
     let finalResult;
-    if (rawParams.scale < 1) {
-      finalResult = new cv.Mat();
-      cv.resize(result, finalResult, new cv.Size(w, h), 0, 0, cv.INTER_LINEAR);
+    if (params.infillEnabled) {
+      const result = fillFrame(src, netMask, params);
+      if (rawParams.scale < 1) {
+        finalResult = new cv.Mat();
+        cv.resize(result, finalResult, new cv.Size(w, h), 0, 0, cv.INTER_LINEAR);
+      } else {
+        finalResult = result.clone();
+      }
+      result.delete();
     } else {
-      finalResult = result.clone();
+      finalResult = fullSrc.clone();
     }
 
     cv.imshow(canvasRes, finalResult);
@@ -760,7 +878,6 @@ async function processVideo() {
     fullSrc.delete();
     src.delete();
     netMask.delete();
-    result.delete();
     finalResult.delete();
 
     const pct = ((frameNum + 1) / totalFrames * 100).toFixed(1);
