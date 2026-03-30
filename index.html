@@ -15,7 +15,7 @@
 
   .header-bar {
     width: 100%; padding: 1rem 0; text-align: center;
-    background: #2980b9; /* change this color each commit to verify deploy */
+    background: #9b59b6; /* change this color each commit to verify deploy */
   }
 
   h1 { margin: 0.25rem 0 0.15rem; font-size: 1.8rem; letter-spacing: -0.02em; }
@@ -143,8 +143,14 @@
     <input type="range" id="scale" min="25" max="100" value="50" step="25">
   </div>
 
-  <div class="checkbox-group">
-    <input type="checkbox" id="fastMode" checked> <label for="fastMode">Fast Mode</label>
+  <div class="control-group">
+    <label>Method</label>
+    <select id="method" style="padding:0.35rem 0.5rem; border-radius:4px; background:#333; color:#eee; border:1px solid #555; font-size:0.85rem;">
+      <option value="diffusion">Diffusion (fast)</option>
+      <option value="telea" selected>Telea</option>
+      <option value="ns">Navier-Stokes</option>
+      <option value="fft">FFT (spectral)</option>
+    </select>
   </div>
 
   <div class="checkbox-group">
@@ -209,7 +215,7 @@ const ctxMask = canvasMask.getContext("2d");
 
 const hiddenVideo = document.getElementById("hiddenVideo");
 
-const fastModeCb = document.getElementById("fastMode");
+const methodEl = document.getElementById("method");
 
 // Slider value displays — threshold is absolute, others show as %
 const thresholdEl = document.getElementById("threshold");
@@ -241,7 +247,7 @@ function getParams() {
     morphSizePct: parseInt(document.getElementById("morphSize").value) / 1000,
     dilatePct: parseInt(document.getElementById("dilate").value) / 1000,
     scale: parseInt(scaleEl.value) / 100,
-    fastMode: fastModeCb.checked,
+    method: methodEl.value,
     showMask: showMaskCb.checked,
   };
 }
@@ -256,7 +262,7 @@ function resolveParams(params, width, height) {
     radius: Math.max(1, Math.round(params.radiusPct * ref)),
     morphSize: morphSize,
     dilate: Math.max(0, Math.round(params.dilatePct * ref)),
-    fastMode: params.fastMode,
+    method: params.method,
     showMask: params.showMask,
     scale: params.scale,
   };
@@ -295,36 +301,176 @@ function buildNetMask(src, params) {
   return netMask;
 }
 
-// --- Fill masked pixels ---
-function inpaintFrame(src, netMask, radius, fastMode) {
-  if (fastMode) {
-    // Iterative diffusion: repeatedly blur, then replace only masked pixels.
-    // Each pass, surrounding clean pixels bleed further into net regions.
-    const result = src.clone();
-    const ksize = Math.max(radius * 4 + 1, 5);
-    const iterations = 15;
-    for (let i = 0; i < iterations; i++) {
-      const blurred = new cv.Mat();
-      cv.GaussianBlur(result, blurred, new cv.Size(ksize, ksize), 0);
-      blurred.copyTo(result, netMask); // only overwrite net pixels
-      blurred.delete();
-    }
-    return result;
-  }
+// --- Fill methods ---
 
-  // Quality: Telea inpainting (slower)
+function fillDiffusion(src, netMask, radius) {
+  // Iterative diffusion: repeatedly blur, then replace only masked pixels.
+  // Each pass, surrounding clean pixels bleed further into net regions.
+  const result = src.clone();
+  const ksize = Math.max(radius * 4 + 1, 5);
+  for (let i = 0; i < 15; i++) {
+    const blurred = new cv.Mat();
+    cv.GaussianBlur(result, blurred, new cv.Size(ksize, ksize), 0);
+    blurred.copyTo(result, netMask);
+    blurred.delete();
+  }
+  return result;
+}
+
+function fillTelea(src, netMask, radius) {
   const bgr = new cv.Mat();
   cv.cvtColor(src, bgr, cv.COLOR_RGBA2BGR);
-
   const inpainted = new cv.Mat();
   cv.inpaint(bgr, netMask, inpainted, radius, cv.INPAINT_TELEA);
   bgr.delete();
-
   const rgba = new cv.Mat();
   cv.cvtColor(inpainted, rgba, cv.COLOR_BGR2RGBA);
   inpainted.delete();
-
   return rgba;
+}
+
+function fillNavierStokes(src, netMask, radius) {
+  const bgr = new cv.Mat();
+  cv.cvtColor(src, bgr, cv.COLOR_RGBA2BGR);
+  const inpainted = new cv.Mat();
+  cv.inpaint(bgr, netMask, inpainted, radius, cv.INPAINT_NS);
+  bgr.delete();
+  const rgba = new cv.Mat();
+  cv.cvtColor(inpainted, rgba, cv.COLOR_BGR2RGBA);
+  inpainted.delete();
+  return rgba;
+}
+
+function fillFFT(src, netMask, radius) {
+  // Process each color channel independently in the frequency domain.
+  // For each channel: FFT, suppress high-energy frequencies that correspond
+  // to the net's repeating pattern, inverse FFT, then blend only masked pixels.
+  const channels = new cv.MatVector();
+  cv.split(src, channels);
+
+  const resultChannels = new cv.MatVector();
+
+  for (let c = 0; c < 3; c++) { // skip alpha
+    const chan = channels.get(c);
+
+    // Pad to optimal DFT size
+    const rows = cv.getOptimalDFTSize(chan.rows);
+    const cols = cv.getOptimalDFTSize(chan.cols);
+    const padded = new cv.Mat();
+    cv.copyMakeBorder(chan, padded, 0, rows - chan.rows, 0, cols - chan.cols,
+      cv.BORDER_CONSTANT, new cv.Scalar(0));
+
+    // Build complex plane (real + zeros for imaginary)
+    const planes = new cv.MatVector();
+    const floatPadded = new cv.Mat();
+    padded.convertTo(floatPadded, cv.CV_32F);
+    const zeros = cv.Mat.zeros(padded.rows, padded.cols, cv.CV_32F);
+    planes.push_back(floatPadded);
+    planes.push_back(zeros);
+    const complex = new cv.Mat();
+    cv.merge(planes, complex);
+
+    // Forward DFT
+    cv.dft(complex, complex);
+
+    // Split into magnitude and phase
+    const dftPlanes = new cv.MatVector();
+    cv.split(complex, dftPlanes);
+    const re = dftPlanes.get(0);
+    const im = dftPlanes.get(1);
+    const mag = new cv.Mat();
+    cv.magnitude(re, im, mag);
+
+    // Build a notch filter: suppress frequency bins with magnitude far above
+    // the local median — these correspond to the periodic net pattern.
+    // Use a threshold based on mean + k * stddev of the log-magnitude.
+    const logMag = new cv.Mat();
+    const ones = cv.Mat.ones(mag.rows, mag.cols, cv.CV_32F);
+    cv.add(mag, ones, logMag);
+    cv.log(logMag, logMag);
+    ones.delete();
+
+    const mean = new cv.Mat();
+    const stddev = new cv.Mat();
+    cv.meanStdDev(logMag, mean, stddev);
+    const mu = mean.doubleAt(0, 0);
+    const sigma = stddev.doubleAt(0, 0);
+    const cutoff = mu + 2.5 * sigma; // suppress peaks > 2.5 stddev above mean
+
+    // Create suppression mask: attenuate high-energy bins
+    // Keep DC component (0,0) untouched
+    const suppressionFactor = 0.05; // reduce peaks to 5% of original
+    const reData = re.data32F;
+    const imData = im.data32F;
+    const logData = logMag.data32F;
+    const dcRadius = Math.max(3, Math.round(Math.min(rows, cols) * 0.01));
+
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        const idx = y * cols + x;
+        // Skip DC neighborhood
+        if (y < dcRadius && x < dcRadius) continue;
+        if (y < dcRadius && x >= cols - dcRadius) continue;
+        if (y >= rows - dcRadius && x < dcRadius) continue;
+        if (y >= rows - dcRadius && x >= cols - dcRadius) continue;
+
+        if (logData[idx] > cutoff) {
+          reData[idx] *= suppressionFactor;
+          imData[idx] *= suppressionFactor;
+        }
+      }
+    }
+
+    // Rebuild complex and inverse DFT
+    const filteredPlanes = new cv.MatVector();
+    filteredPlanes.push_back(re);
+    filteredPlanes.push_back(im);
+    const filtered = new cv.Mat();
+    cv.merge(filteredPlanes, filtered);
+    cv.idft(filtered, filtered, cv.DFT_SCALE);
+
+    // Extract real part
+    const outPlanes = new cv.MatVector();
+    cv.split(filtered, outPlanes);
+    const realPart = outPlanes.get(0);
+
+    // Crop back to original size and convert to 8-bit
+    const cropped = realPart.roi(new cv.Rect(0, 0, chan.cols, chan.rows));
+    const chan8 = new cv.Mat();
+    cropped.convertTo(chan8, cv.CV_8U);
+
+    resultChannels.push_back(chan8);
+
+    // Cleanup
+    padded.delete(); floatPadded.delete(); zeros.delete();
+    planes.delete(); complex.delete(); dftPlanes.delete();
+    mag.delete(); logMag.delete(); mean.delete(); stddev.delete();
+    filteredPlanes.delete(); filtered.delete(); outPlanes.delete();
+    chan8.delete();
+  }
+
+  // Keep original alpha channel
+  resultChannels.push_back(channels.get(3));
+
+  const fftResult = new cv.Mat();
+  cv.merge(resultChannels, fftResult);
+
+  // Blend: use FFT result only where mask is set, keep original elsewhere
+  const result = src.clone();
+  fftResult.copyTo(result, netMask);
+
+  channels.delete(); resultChannels.delete(); fftResult.delete();
+  return result;
+}
+
+function fillFrame(src, netMask, radius, method) {
+  switch (method) {
+    case "diffusion": return fillDiffusion(src, netMask, radius);
+    case "telea":     return fillTelea(src, netMask, radius);
+    case "ns":        return fillNavierStokes(src, netMask, radius);
+    case "fft":       return fillFFT(src, netMask, radius);
+    default:          return fillTelea(src, netMask, radius);
+  }
 }
 
 // --- Process single image ---
@@ -349,7 +495,7 @@ function processImage() {
   const params = resolveParams(rawParams, src.cols, src.rows);
 
   const netMask = buildNetMask(src, params);
-  const result = inpaintFrame(src, netMask, params.radius, params.fastMode);
+  const result = fillFrame(src, netMask, params.radius, params.method);
 
   // Upscale result back to original size if needed
   let finalResult;
@@ -467,7 +613,7 @@ async function processVideo() {
     }
 
     const netMask = buildNetMask(src, params);
-    const result = inpaintFrame(src, netMask, params.radius, params.fastMode);
+    const result = fillFrame(src, netMask, params.radius, params.method);
 
     let finalResult;
     if (rawParams.scale < 1) {
