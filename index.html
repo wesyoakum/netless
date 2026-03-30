@@ -15,7 +15,7 @@
 
   .header-bar {
     width: 100%; padding: 1rem 0; text-align: center;
-    background: #e056a0; /* change this color each commit to verify deploy */
+    background: #2ecc71; /* change this color each commit to verify deploy */
   }
 
   h1 { margin: 0.25rem 0 0.15rem; font-size: 1.8rem; letter-spacing: -0.02em; }
@@ -262,6 +262,8 @@
 let cvReady = false;
 let currentFile = null;
 let processing = false;
+let processTimer = null;
+let processStart = 0;
 
 // --- DOM refs ---
 const fileInput = document.getElementById("fileInput");
@@ -705,8 +707,6 @@ function fillFrame(src, netMask, params) {
 // --- Process single image ---
 function processImage() {
   const rawParams = getParams();
-  const t0 = performance.now();
-
   const fullSrc = cv.imread(canvasOrig);
 
   let src;
@@ -750,13 +750,11 @@ function processImage() {
     result.delete();
     finalResult.delete();
 
-    const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
-    statusEl.textContent = `Done in ${elapsed}s.`;
+    stopProcessTimer();
     saveBtn.disabled = false;
   } else {
-    // Copy original to result canvas so it's clear infill is off
     cv.imshow(canvasRes, fullSrc);
-    statusEl.textContent = "Mask updated. Infill is off.";
+    stopProcessTimer("Mask updated. Infill is off.");
     saveBtn.disabled = true;
   }
 
@@ -827,6 +825,8 @@ async function processVideo() {
   recorder.start();
 
   progressBar.style.display = "block";
+  // Stop the interval timer — video loop updates status per frame
+  clearInterval(processTimer);
 
   // Reset to start before processing
   await seekTo(hiddenVideo, 0);
@@ -883,7 +883,8 @@ async function processVideo() {
     const pct = ((frameNum + 1) / totalFrames * 100).toFixed(1);
     progressFill.style.width = pct + "%";
     progressText.textContent = `Frame ${frameNum + 1} / ${totalFrames} (${pct}%)`;
-    statusEl.textContent = `Processing frame ${frameNum + 1} / ${totalFrames}...`;
+    const elapsed = ((performance.now() - processStart) / 1000).toFixed(1);
+    statusEl.textContent = `Frame ${frameNum + 1} / ${totalFrames} \u2014 ${elapsed}s`;
 
     // Yield to browser for UI updates
     await new Promise((r) => setTimeout(r, 0));
@@ -893,7 +894,7 @@ async function processVideo() {
   await recorderDone;
 
   progressBar.style.display = "none";
-  statusEl.textContent = "Done. Video ready to save.";
+  stopProcessTimer("Video ready to save.");
   saveBtn.disabled = false;
 }
 
@@ -948,15 +949,33 @@ fileInput.addEventListener("change", (e) => {
 });
 
 // --- Process button ---
+function startProcessTimer() {
+  processStart = performance.now();
+  clearInterval(processTimer);
+  processTimer = setInterval(() => {
+    const elapsed = ((performance.now() - processStart) / 1000).toFixed(1);
+    statusEl.textContent = `Processing... ${elapsed}s`;
+  }, 100);
+}
+
+function stopProcessTimer(msg) {
+  clearInterval(processTimer);
+  processTimer = null;
+  const elapsed = ((performance.now() - processStart) / 1000).toFixed(1);
+  statusEl.textContent = msg || `Done in ${elapsed}s.`;
+}
+
 processBtn.addEventListener("click", async () => {
   if (processing || !currentFile) return;
   processing = true;
   processBtn.disabled = true;
   saveBtn.disabled = true;
-  statusEl.textContent = "Processing...";
 
-  // Show mask row if checkbox is checked
   maskRow.style.display = showMaskCb.checked ? "flex" : "none";
+  startProcessTimer();
+
+  // Yield so the timer can render before blocking work starts
+  await new Promise(r => setTimeout(r, 0));
 
   try {
     if (currentFile.type.startsWith("image/")) {
@@ -965,7 +984,7 @@ processBtn.addEventListener("click", async () => {
       await processVideo();
     }
   } catch (err) {
-    statusEl.textContent = "Error: " + err.message;
+    stopProcessTimer("Error: " + err.message);
     console.error(err);
   }
 
