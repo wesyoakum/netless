@@ -15,7 +15,7 @@
 
   .header-bar {
     width: 100%; padding: 1rem 0; text-align: center;
-    background: #2c3e50; /* change this color each commit to verify deploy */
+    background: #e67e22; /* change this color each commit to verify deploy */
   }
 
   h1 { margin: 0.25rem 0 0.15rem; font-size: 1.8rem; letter-spacing: -0.02em; }
@@ -719,22 +719,20 @@ function fillFFT(src, netMask, params) {
     }
 
     const zeros = cv.Mat.zeros(dftRows, dftCols, cv.CV_32F);
-    const planesVec = new cv.MatVector();
-    const complex = new cv.Mat();
-    const splitVec = new cv.MatVector();
 
     for (let iter = 0; iter < iterations; iter++) {
       // Forward DFT
-      planesVec.delete(); // clear previous
       const pv = new cv.MatVector();
       pv.push_back(floatChan);
       pv.push_back(zeros.clone());
+      const complex = new cv.Mat();
       cv.merge(pv, complex);
       pv.delete();
 
       cv.dft(complex, complex);
 
       // Apply low-pass filter in frequency domain
+      const splitVec = new cv.MatVector();
       cv.split(complex, splitVec);
       const re = splitVec.get(0);
       const im = splitVec.get(1);
@@ -765,15 +763,14 @@ function fillFFT(src, netMask, params) {
           const di = y * dftCols + x;
           const si = y * w + x;
           if (isMasked[si]) {
-            // Masked pixel: accept the FFT result
             fcData[di] = rpData[di];
           } else {
-            // Known pixel: enforce original value
             fcData[di] = pixels[si];
           }
         }
       }
 
+      complex.delete(); splitVec.delete();
       filtVec.delete(); filtComplex.delete(); outVec.delete();
     }
 
@@ -784,8 +781,7 @@ function fillFFT(src, netMask, params) {
     resultChannels.push_back(chan8);
 
     // Cleanup
-    floatChan.delete(); zeros.delete(); complex.delete();
-    splitVec.delete(); chan8.delete();
+    floatChan.delete(); zeros.delete(); chan8.delete();
   }
 
   // Keep original alpha
