@@ -15,7 +15,7 @@
 
   .header-bar {
     width: 100%; padding: 1rem 0; text-align: center;
-    background: #f39c12; /* change this color each commit to verify deploy */
+    background: #3498db; /* change this color each commit to verify deploy */
   }
 
   h1 { margin: 0.25rem 0 0.15rem; font-size: 1.8rem; letter-spacing: -0.02em; }
@@ -153,6 +153,16 @@
     </select>
   </div>
 
+  <div class="control-group diffusion-only" style="display:none;">
+    <label>Kernel <span class="value" id="diffKernelVal">29</span></label>
+    <input type="range" id="diffKernel" min="3" max="99" value="29" step="2">
+  </div>
+
+  <div class="control-group diffusion-only" style="display:none;">
+    <label>Iterations <span class="value" id="diffIterVal">15</span></label>
+    <input type="range" id="diffIter" min="1" max="50" value="15">
+  </div>
+
   <div class="checkbox-group">
     <input type="checkbox" id="lineFilter"> <label for="lineFilter">Line Filter</label>
   </div>
@@ -224,6 +234,19 @@ const ctxMask = canvasMask.getContext("2d");
 const hiddenVideo = document.getElementById("hiddenVideo");
 
 const methodEl = document.getElementById("method");
+const diffusionCtrls = document.querySelectorAll(".diffusion-only");
+const diffKernelEl = document.getElementById("diffKernel");
+const diffKernelValEl = document.getElementById("diffKernelVal");
+const diffIterEl = document.getElementById("diffIter");
+const diffIterValEl = document.getElementById("diffIterVal");
+
+diffKernelEl.addEventListener("input", () => { diffKernelValEl.textContent = diffKernelEl.value; });
+diffIterEl.addEventListener("input", () => { diffIterValEl.textContent = diffIterEl.value; });
+
+methodEl.addEventListener("change", () => {
+  const show = methodEl.value === "diffusion";
+  diffusionCtrls.forEach(el => { el.style.display = show ? "flex" : "none"; });
+});
 
 // Slider value displays — threshold is absolute, others show as %
 const thresholdEl = document.getElementById("threshold");
@@ -259,6 +282,8 @@ function getParams() {
     dilatePct: parseInt(document.getElementById("dilate").value) / 1000,
     scale: parseInt(scaleEl.value) / 100,
     method: methodEl.value,
+    diffKernel: parseInt(diffKernelEl.value),
+    diffIter: parseInt(diffIterEl.value),
     lineFilter: lineFilterCb.checked,
     connectedFilter: connectedFilterCb.checked,
     showMask: showMaskCb.checked,
@@ -276,6 +301,8 @@ function resolveParams(params, width, height) {
     morphSize: morphSize,
     dilate: Math.max(0, Math.round(params.dilatePct * ref)),
     method: params.method,
+    diffKernel: params.diffKernel,
+    diffIter: params.diffIter,
     lineFilter: params.lineFilter,
     connectedFilter: params.connectedFilter,
     showMask: params.showMask,
@@ -396,12 +423,13 @@ function buildNetMask(src, params) {
 
 // --- Fill methods ---
 
-function fillDiffusion(src, netMask, radius) {
+function fillDiffusion(src, netMask, kernelSize, iterations) {
   // Iterative diffusion: repeatedly blur, then replace only masked pixels.
   // Each pass, surrounding clean pixels bleed further into net regions.
   const result = src.clone();
-  const ksize = Math.max(radius * 4 + 1, 5);
-  for (let i = 0; i < 15; i++) {
+  let ksize = Math.max(kernelSize, 3);
+  if (ksize % 2 === 0) ksize++;
+  for (let i = 0; i < iterations; i++) {
     const blurred = new cv.Mat();
     cv.GaussianBlur(result, blurred, new cv.Size(ksize, ksize), 0);
     blurred.copyTo(result, netMask);
@@ -556,13 +584,13 @@ function fillFFT(src, netMask, radius) {
   return result;
 }
 
-function fillFrame(src, netMask, radius, method) {
-  switch (method) {
-    case "diffusion": return fillDiffusion(src, netMask, radius);
-    case "telea":     return fillTelea(src, netMask, radius);
-    case "ns":        return fillNavierStokes(src, netMask, radius);
-    case "fft":       return fillFFT(src, netMask, radius);
-    default:          return fillTelea(src, netMask, radius);
+function fillFrame(src, netMask, params) {
+  switch (params.method) {
+    case "diffusion": return fillDiffusion(src, netMask, params.diffKernel, params.diffIter);
+    case "telea":     return fillTelea(src, netMask, params.radius);
+    case "ns":        return fillNavierStokes(src, netMask, params.radius);
+    case "fft":       return fillFFT(src, netMask, params.radius);
+    default:          return fillTelea(src, netMask, params.radius);
   }
 }
 
@@ -588,7 +616,7 @@ function processImage() {
   const params = resolveParams(rawParams, src.cols, src.rows);
 
   const netMask = buildNetMask(src, params);
-  const result = fillFrame(src, netMask, params.radius, params.method);
+  const result = fillFrame(src, netMask, params);
 
   // Upscale result back to original size if needed
   let finalResult;
@@ -706,7 +734,7 @@ async function processVideo() {
     }
 
     const netMask = buildNetMask(src, params);
-    const result = fillFrame(src, netMask, params.radius, params.method);
+    const result = fillFrame(src, netMask, params);
 
     let finalResult;
     if (rawParams.scale < 1) {
