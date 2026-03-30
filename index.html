@@ -15,7 +15,7 @@
 
   .header-bar {
     width: 100%; padding: 1rem 0; text-align: center;
-    background: #d35400; /* change this color each commit to verify deploy */
+    background: #2c3e50; /* change this color each commit to verify deploy */
   }
 
   h1 { margin: 0.25rem 0 0.15rem; font-size: 1.8rem; letter-spacing: -0.02em; }
@@ -191,6 +191,16 @@
     <input type="range" id="diffIter" min="1" max="50" value="15">
   </div>
 
+  <div class="control-group fft-only" style="display:none;">
+    <label>FFT Iterations <span class="value" id="fftIterVal">20</span></label>
+    <input type="range" id="fftIter" min="1" max="100" value="20">
+  </div>
+
+  <div class="control-group fft-only" style="display:none;">
+    <label>Freq Cutoff <span class="value" id="fftCutoffVal">0.85</span></label>
+    <input type="range" id="fftCutoff" min="50" max="99" value="85">
+  </div>
+
   <button class="btn btn-process" id="processBtn" disabled>Process</button>
   <button class="btn btn-save" id="saveBtn" disabled>Save Result</button>
 </div>
@@ -242,21 +252,27 @@
         <li><strong style="color:#ddd;">Diffusion</strong> &mdash; Iteratively blurs the image and replaces only masked pixels each pass. Surrounding colors gradually flood into net regions. Fastest method. Kernel controls the blur size per pass; Iterations controls how many passes.</li>
         <li><strong style="color:#ddd;">Telea</strong> &mdash; Fast Marching Method inpainting. Fills from the mask boundary inward, weighting nearer pixels more heavily. Good balance of speed and quality. Radius controls how far from each masked pixel the algorithm looks for source colors.</li>
         <li><strong style="color:#ddd;">Navier-Stokes</strong> &mdash; Fluid dynamics model that propagates both color and gradient direction into masked regions. Preserves edge continuity better than Telea. Similar speed. Uses the same Radius parameter.</li>
-        <li><strong style="color:#ddd;">FFT (Spectral)</strong> &mdash; Works on the principle that the netting is a repeating pattern, which shows up as distinct spikes in the frequency domain. For each color channel (R, G, B) independently:
+        <li><strong style="color:#ddd;">FFT (Spectral)</strong> &mdash; Iterative frequency-domain reconstruction that treats masked pixels as missing data and recovers them using spectral smoothness constraints. For each color channel (R, G, B) independently:
           <ol style="margin:0.3rem 0 0.3rem 1rem;">
-            <li>The image is padded to an optimal size and converted to a complex number representation (real + imaginary components).</li>
-            <li>A <strong>Forward Discrete Fourier Transform (DFT)</strong> converts the image from the spatial domain (pixels) into the frequency domain (sinusoidal components). Each point in the frequency image represents a specific repeating pattern &mdash; its position encodes the direction and spacing, its magnitude encodes how strong that pattern is.</li>
-            <li>The magnitude spectrum is analyzed: the mean and standard deviation of the log-magnitudes are computed. Frequency bins whose log-magnitude exceeds <strong>2.5 standard deviations above the mean</strong> are identified as high-energy peaks &mdash; these correspond to the net&rsquo;s periodic grid pattern, which concentrates energy at specific frequencies due to its regular strand spacing.</li>
-            <li>These peaks are <strong>suppressed to 5% of their original magnitude</strong>, effectively erasing the net&rsquo;s repeating pattern from the frequency representation. The DC component (overall brightness, center of the spectrum) and a small neighborhood around it are always preserved so the image&rsquo;s average color and large-scale features remain untouched.</li>
-            <li>An <strong>Inverse DFT</strong> converts back to the spatial domain, producing a version of the channel with the periodic net pattern removed.</li>
+            <li><strong>Initialization:</strong> Masked pixels are treated as unknown. Each one is filled by finding the nearest valid (unmasked) pixel in the four cardinal directions (up, down, left, right) and computing an inverse-distance-weighted average. This propagates inward over multiple passes so that even thick masked regions get a reasonable starting estimate from boundary pixels.</li>
+            <li><strong>Forward DFT:</strong> The initialized image is padded to optimal DFT size and transformed to the frequency domain. Each point in the spectrum represents a repeating spatial pattern &mdash; position encodes direction and spacing, magnitude encodes strength.</li>
+            <li><strong>Frequency constraint:</strong> A low-pass filter zeros out frequencies beyond the Freq Cutoff ratio. This enforces the assumption that the clean image (without the net) is smoother than the corrupted one &mdash; the net&rsquo;s thin, high-frequency structure gets suppressed while natural image content (which is predominantly low-frequency) is preserved.</li>
+            <li><strong>Inverse DFT:</strong> The filtered spectrum is transformed back to the spatial domain.</li>
+            <li><strong>Spatial constraint:</strong> All originally unmasked (known) pixels are restored to their exact original values. Only masked pixels are allowed to change. This is critical &mdash; it prevents the frequency filtering from degrading known good data.</li>
+            <li><strong>Iteration:</strong> Steps 2&ndash;5 repeat for the configured number of FFT Iterations. Each cycle, the frequency constraint pulls masked pixel values toward a spectrally smooth solution, while the spatial constraint anchors known pixels. The masked pixels converge toward values that are both consistent with their neighbors and spectrally plausible.</li>
           </ol>
-          The three processed channels are recombined with the original alpha channel. The final result is blended with the original image: only pixels within the detected mask are replaced with the FFT-cleaned version, preserving untouched areas exactly. This method is most effective on dense, regular diamond or square grid netting where the pattern has a strong, consistent spatial frequency.</li>
+          <strong>Why it works:</strong> The net is a thin, high-frequency structure. The clean image behind it is (locally) much smoother. By iteratively enforcing that the full image should be band-limited while pinning known pixels, the algorithm reconstructs what the masked pixels &ldquo;should&rdquo; be if the net weren&rsquo;t there. The Freq Cutoff controls the smoothness/detail tradeoff &mdash; lower values produce softer but more complete removal, higher values preserve more texture but may retain artifacts.
+          <br><br>
+          <strong>Limitations:</strong> Large contiguous masked regions with highly textured backgrounds may blur, since the band-limited assumption breaks down. Works best when the masked strands are thin relative to the image features behind them.</li>
       </ul>
 
       <h3 style="color:#ccc; font-size:0.9rem; margin:0.75rem 0 0.4rem;">General</h3>
       <ul style="padding-left:1.2rem; margin:0.4rem 0;">
         <li><strong style="color:#ddd;">Scale</strong> &mdash; Processes at a reduced resolution then upscales. Lower scale = much faster. Use 100% for final output quality.</li>
-        <li><strong style="color:#ddd;">Radius</strong> &mdash; Inpainting radius as a percentage of the shorter dimension. Larger values fill wider gaps but may soften details.</li>
+        <li><strong style="color:#ddd;">Radius</strong> &mdash; Inpainting radius as a percentage of the shorter dimension. Used by Telea and Navier-Stokes methods. Larger values fill wider gaps but may soften details.</li>
+        <li><strong style="color:#ddd;">Kernel / Iterations (Diffusion)</strong> &mdash; Kernel sets the Gaussian blur size per pass. Iterations controls how many blur-and-replace passes are run.</li>
+        <li><strong style="color:#ddd;">FFT Iterations</strong> &mdash; Number of FFT &harr; IFFT cycles for the iterative reconstruction. More iterations let the frequency constraint propagate further into masked regions. 10&ndash;30 is usually sufficient.</li>
+        <li><strong style="color:#ddd;">Freq Cutoff</strong> &mdash; Fraction of the frequency spectrum to preserve (0.50&ndash;0.99). Lower values enforce stronger smoothness by cutting more high frequencies, producing softer fills. Higher values preserve more detail but may retain net artifacts. 0.85 is a good starting point.</li>
         <li><strong style="color:#ddd;">Enable Infill</strong> &mdash; When off, only the mask is computed and displayed. Useful for dialing in mask parameters without waiting for the infill step.</li>
       </ul>
     </div>
@@ -295,24 +311,31 @@ const hiddenVideo = document.getElementById("hiddenVideo");
 
 const methodEl = document.getElementById("method");
 const diffusionCtrls = document.querySelectorAll(".diffusion-only");
+const fftCtrls = document.querySelectorAll(".fft-only");
 const infillCtrls = document.querySelectorAll(".infill-ctrl");
 const diffKernelEl = document.getElementById("diffKernel");
 const diffKernelValEl = document.getElementById("diffKernelVal");
 const diffIterEl = document.getElementById("diffIter");
 const diffIterValEl = document.getElementById("diffIterVal");
+const fftIterEl = document.getElementById("fftIter");
+const fftIterValEl = document.getElementById("fftIterVal");
+const fftCutoffEl = document.getElementById("fftCutoff");
+const fftCutoffValEl = document.getElementById("fftCutoffVal");
 const infillEnabledCb = document.getElementById("infillEnabled");
 const lineFilterCb = document.getElementById("lineFilter");
 const connectedFilterCb = document.getElementById("connectedFilter");
 
 diffKernelEl.addEventListener("input", () => { diffKernelValEl.textContent = diffKernelEl.value; });
 diffIterEl.addEventListener("input", () => { diffIterValEl.textContent = diffIterEl.value; });
+fftIterEl.addEventListener("input", () => { fftIterValEl.textContent = fftIterEl.value; });
+fftCutoffEl.addEventListener("input", () => { fftCutoffValEl.textContent = (fftCutoffEl.value / 100).toFixed(2); });
 
 function updateInfillVisibility() {
   const on = infillEnabledCb.checked;
+  const m = methodEl.value;
   infillCtrls.forEach(el => { el.style.display = on ? "flex" : "none"; });
-  diffusionCtrls.forEach(el => {
-    el.style.display = (on && methodEl.value === "diffusion") ? "flex" : "none";
-  });
+  diffusionCtrls.forEach(el => { el.style.display = (on && m === "diffusion") ? "flex" : "none"; });
+  fftCtrls.forEach(el => { el.style.display = (on && m === "fft") ? "flex" : "none"; });
 }
 methodEl.addEventListener("change", updateInfillVisibility);
 infillEnabledCb.addEventListener("change", updateInfillVisibility);
@@ -401,6 +424,8 @@ function getParams() {
     method: methodEl.value,
     diffKernel: parseInt(diffKernelEl.value),
     diffIter: parseInt(diffIterEl.value),
+    fftIter: parseInt(fftIterEl.value),
+    fftCutoff: parseInt(fftCutoffEl.value) / 100,
     lineFilter: lineFilterCb.checked,
     connectedFilter: connectedFilterCb.checked,
     infillEnabled: infillEnabledCb.checked,
@@ -420,6 +445,8 @@ function resolveParams(params, width, height) {
     method: params.method,
     diffKernel: params.diffKernel,
     diffIter: params.diffIter,
+    fftIter: params.fftIter,
+    fftCutoff: params.fftCutoff,
     lineFilter: params.lineFilter,
     connectedFilter: params.connectedFilter,
     infillEnabled: params.infillEnabled,
@@ -580,121 +607,194 @@ function fillNavierStokes(src, netMask, radius) {
   return rgba;
 }
 
-function fillFFT(src, netMask, radius) {
-  // Process each color channel independently in the frequency domain.
-  // For each channel: FFT, suppress high-energy frequencies that correspond
-  // to the net's repeating pattern, inverse FFT, then blend only masked pixels.
+function fillFFT(src, netMask, params) {
+  // Iterative FFT-based reconstruction:
+  // 1. Initialize masked pixels via inverse-distance-weighted cardinal fill
+  // 2. Iterate: FFT → suppress high frequencies → IFFT → enforce known pixels
+  //
+  // The mask marks missing data. Standard FFT can't handle nulls, so we
+  // initialize missing pixels deterministically, then iteratively project
+  // between the frequency constraint (smoothness) and the spatial constraint
+  // (known pixels must stay fixed).
+
+  const h = src.rows;
+  const w = src.cols;
+  const iterations = params.fftIter;
+  const cutoffRatio = params.fftCutoff; // fraction of spectrum to keep
+
+  // Build mask boolean array once
+  const maskData = netMask.data;
+  const totalPx = h * w;
+
   const channels = new cv.MatVector();
   cv.split(src, channels);
-
   const resultChannels = new cv.MatVector();
 
-  for (let c = 0; c < 3; c++) { // skip alpha
+  // Optimal DFT size
+  const dftRows = cv.getOptimalDFTSize(h);
+  const dftCols = cv.getOptimalDFTSize(w);
+
+  // Build low-pass filter mask (elliptical, centered)
+  // Kept in spatial layout matching DFT output (DC at corners)
+  const lpFilter = new Float32Array(dftRows * dftCols);
+  const halfR = dftRows / 2;
+  const halfC = dftCols / 2;
+  const radiusR = halfR * cutoffRatio;
+  const radiusC = halfC * cutoffRatio;
+  for (let y = 0; y < dftRows; y++) {
+    for (let x = 0; x < dftCols; x++) {
+      // Distance from DC (which is at corners in unshifted DFT)
+      let dy = y < halfR ? y : dftRows - y;
+      let dx = x < halfC ? x : dftCols - x;
+      const d = (dy / radiusR) ** 2 + (dx / radiusC) ** 2;
+      lpFilter[y * dftCols + x] = d <= 1.0 ? 1.0 : 0.0;
+    }
+  }
+
+  for (let c = 0; c < 3; c++) {
     const chan = channels.get(c);
+    const chanData = chan.data;
 
-    // Pad to optimal DFT size
-    const rows = cv.getOptimalDFTSize(chan.rows);
-    const cols = cv.getOptimalDFTSize(chan.cols);
-    const padded = new cv.Mat();
-    cv.copyMakeBorder(chan, padded, 0, rows - chan.rows, 0, cols - chan.cols,
-      cv.BORDER_CONSTANT, new cv.Scalar(0));
+    // --- Step 1: Cardinal inverse-distance initialization ---
+    // Work on a float copy
+    const pixels = new Float32Array(totalPx);
+    const isMasked = new Uint8Array(totalPx);
+    for (let i = 0; i < totalPx; i++) {
+      pixels[i] = chanData[i];
+      isMasked[i] = maskData[i] > 0 ? 1 : 0;
+    }
 
-    // Build complex plane (real + zeros for imaginary)
-    const planes = new cv.MatVector();
-    const floatPadded = new cv.Mat();
-    padded.convertTo(floatPadded, cv.CV_32F);
-    const zeros = cv.Mat.zeros(padded.rows, padded.cols, cv.CV_32F);
-    planes.push_back(floatPadded);
-    planes.push_back(zeros);
-    const complex = new cv.Mat();
-    cv.merge(planes, complex);
+    // For each masked pixel, find nearest unmasked in 4 cardinal directions
+    // and interpolate using inverse distance weighting.
+    // Process multiple passes so thick masked regions fill from boundary inward.
+    const filled = new Uint8Array(totalPx); // track which masked px are filled
+    for (let pass = 0; pass < 20; pass++) {
+      let changed = false;
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const idx = y * w + x;
+          if (!isMasked[idx] || filled[idx]) continue;
 
-    // Forward DFT
-    cv.dft(complex, complex);
+          let sumW = 0, sumV = 0;
 
-    // Split into magnitude and phase
-    const dftPlanes = new cv.MatVector();
-    cv.split(complex, dftPlanes);
-    const re = dftPlanes.get(0);
-    const im = dftPlanes.get(1);
-    const mag = new cv.Mat();
-    cv.magnitude(re, im, mag);
+          // Up
+          for (let dy = y - 1; dy >= 0; dy--) {
+            const ni = dy * w + x;
+            if (!isMasked[ni] || filled[ni]) { const d = y - dy; sumW += 1/d; sumV += pixels[ni]/d; break; }
+          }
+          // Down
+          for (let dy = y + 1; dy < h; dy++) {
+            const ni = dy * w + x;
+            if (!isMasked[ni] || filled[ni]) { const d = dy - y; sumW += 1/d; sumV += pixels[ni]/d; break; }
+          }
+          // Left
+          for (let dx = x - 1; dx >= 0; dx--) {
+            const ni = y * w + dx;
+            if (!isMasked[ni] || filled[ni]) { const d = x - dx; sumW += 1/d; sumV += pixels[ni]/d; break; }
+          }
+          // Right
+          for (let dx = x + 1; dx < w; dx++) {
+            const ni = y * w + dx;
+            if (!isMasked[ni] || filled[ni]) { const d = dx - x; sumW += 1/d; sumV += pixels[ni]/d; break; }
+          }
 
-    // Build a notch filter: suppress frequency bins with magnitude far above
-    // the local median — these correspond to the periodic net pattern.
-    // Use a threshold based on mean + k * stddev of the log-magnitude.
-    const logMag = new cv.Mat();
-    const ones = cv.Mat.ones(mag.rows, mag.cols, cv.CV_32F);
-    cv.add(mag, ones, logMag);
-    cv.log(logMag, logMag);
-    ones.delete();
-
-    const mean = new cv.Mat();
-    const stddev = new cv.Mat();
-    cv.meanStdDev(logMag, mean, stddev);
-    const mu = mean.doubleAt(0, 0);
-    const sigma = stddev.doubleAt(0, 0);
-    const cutoff = mu + 2.5 * sigma; // suppress peaks > 2.5 stddev above mean
-
-    // Create suppression mask: attenuate high-energy bins
-    // Keep DC component (0,0) untouched
-    const suppressionFactor = 0.05; // reduce peaks to 5% of original
-    const reData = re.data32F;
-    const imData = im.data32F;
-    const logData = logMag.data32F;
-    const dcRadius = Math.max(3, Math.round(Math.min(rows, cols) * 0.01));
-
-    for (let y = 0; y < rows; y++) {
-      for (let x = 0; x < cols; x++) {
-        const idx = y * cols + x;
-        // Skip DC neighborhood
-        if (y < dcRadius && x < dcRadius) continue;
-        if (y < dcRadius && x >= cols - dcRadius) continue;
-        if (y >= rows - dcRadius && x < dcRadius) continue;
-        if (y >= rows - dcRadius && x >= cols - dcRadius) continue;
-
-        if (logData[idx] > cutoff) {
-          reData[idx] *= suppressionFactor;
-          imData[idx] *= suppressionFactor;
+          if (sumW > 0) {
+            pixels[idx] = sumV / sumW;
+            filled[idx] = 1;
+            changed = true;
+          }
         }
+      }
+      if (!changed) break;
+    }
+
+    // --- Step 2: Iterative FFT reconstruction ---
+    // Create float mat from initialized pixels
+    const floatChan = cv.Mat.zeros(dftRows, dftCols, cv.CV_32F);
+    const fData = floatChan.data32F;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        fData[y * dftCols + x] = pixels[y * w + x];
       }
     }
 
-    // Rebuild complex and inverse DFT
-    const filteredPlanes = new cv.MatVector();
-    filteredPlanes.push_back(re);
-    filteredPlanes.push_back(im);
-    const filtered = new cv.Mat();
-    cv.merge(filteredPlanes, filtered);
-    cv.dft(filtered, filtered, cv.DFT_INVERSE | cv.DFT_SCALE);
+    const zeros = cv.Mat.zeros(dftRows, dftCols, cv.CV_32F);
+    const planesVec = new cv.MatVector();
+    const complex = new cv.Mat();
+    const splitVec = new cv.MatVector();
 
-    // Extract real part
-    const outPlanes = new cv.MatVector();
-    cv.split(filtered, outPlanes);
-    const realPart = outPlanes.get(0);
+    for (let iter = 0; iter < iterations; iter++) {
+      // Forward DFT
+      planesVec.delete(); // clear previous
+      const pv = new cv.MatVector();
+      pv.push_back(floatChan);
+      pv.push_back(zeros.clone());
+      cv.merge(pv, complex);
+      pv.delete();
 
-    // Crop back to original size and convert to 8-bit
-    const cropped = realPart.roi(new cv.Rect(0, 0, chan.cols, chan.rows));
+      cv.dft(complex, complex);
+
+      // Apply low-pass filter in frequency domain
+      cv.split(complex, splitVec);
+      const re = splitVec.get(0);
+      const im = splitVec.get(1);
+      const reD = re.data32F;
+      const imD = im.data32F;
+      for (let i = 0; i < dftRows * dftCols; i++) {
+        reD[i] *= lpFilter[i];
+        imD[i] *= lpFilter[i];
+      }
+
+      // Inverse DFT
+      const filtVec = new cv.MatVector();
+      filtVec.push_back(re);
+      filtVec.push_back(im);
+      const filtComplex = new cv.Mat();
+      cv.merge(filtVec, filtComplex);
+      cv.dft(filtComplex, filtComplex, cv.DFT_INVERSE | cv.DFT_SCALE);
+
+      // Extract real part back into floatChan
+      const outVec = new cv.MatVector();
+      cv.split(filtComplex, outVec);
+      const realPart = outVec.get(0);
+      const rpData = realPart.data32F;
+      const fcData = floatChan.data32F;
+
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const di = y * dftCols + x;
+          const si = y * w + x;
+          if (isMasked[si]) {
+            // Masked pixel: accept the FFT result
+            fcData[di] = rpData[di];
+          } else {
+            // Known pixel: enforce original value
+            fcData[di] = pixels[si];
+          }
+        }
+      }
+
+      filtVec.delete(); filtComplex.delete(); outVec.delete();
+    }
+
+    // Extract result channel
     const chan8 = new cv.Mat();
+    const cropped = floatChan.roi(new cv.Rect(0, 0, w, h));
     cropped.convertTo(chan8, cv.CV_8U);
-
     resultChannels.push_back(chan8);
 
     // Cleanup
-    padded.delete(); floatPadded.delete(); zeros.delete();
-    planes.delete(); complex.delete(); dftPlanes.delete();
-    mag.delete(); logMag.delete(); mean.delete(); stddev.delete();
-    filteredPlanes.delete(); filtered.delete(); outPlanes.delete();
-    chan8.delete();
+    floatChan.delete(); zeros.delete(); complex.delete();
+    splitVec.delete(); chan8.delete();
   }
 
-  // Keep original alpha channel
+  // Keep original alpha
   resultChannels.push_back(channels.get(3));
 
   const fftResult = new cv.Mat();
   cv.merge(resultChannels, fftResult);
 
-  // Blend: use FFT result only where mask is set, keep original elsewhere
+  // Final: keep original everywhere except masked pixels
   const result = src.clone();
   fftResult.copyTo(result, netMask);
 
@@ -707,7 +807,7 @@ function fillFrame(src, netMask, params) {
     case "diffusion": return fillDiffusion(src, netMask, params.diffKernel, params.diffIter);
     case "telea":     return fillTelea(src, netMask, params.radius);
     case "ns":        return fillNavierStokes(src, netMask, params.radius);
-    case "fft":       return fillFFT(src, netMask, params.radius);
+    case "fft":       return fillFFT(src, netMask, params);
     default:          return fillTelea(src, netMask, params.radius);
   }
 }
