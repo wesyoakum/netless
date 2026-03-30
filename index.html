@@ -15,7 +15,7 @@
 
   .header-bar {
     width: 100%; padding: 1rem 0; text-align: center;
-    background: #e74c3c; /* change this color each commit to verify deploy */
+    background: #8e44ad; /* change this color each commit to verify deploy */
   }
 
   h1 { margin: 0.25rem 0 0.15rem; font-size: 1.8rem; letter-spacing: -0.02em; }
@@ -242,7 +242,15 @@
         <li><strong style="color:#ddd;">Diffusion</strong> &mdash; Iteratively blurs the image and replaces only masked pixels each pass. Surrounding colors gradually flood into net regions. Fastest method. Kernel controls the blur size per pass; Iterations controls how many passes.</li>
         <li><strong style="color:#ddd;">Telea</strong> &mdash; Fast Marching Method inpainting. Fills from the mask boundary inward, weighting nearer pixels more heavily. Good balance of speed and quality. Radius controls how far from each masked pixel the algorithm looks for source colors.</li>
         <li><strong style="color:#ddd;">Navier-Stokes</strong> &mdash; Fluid dynamics model that propagates both color and gradient direction into masked regions. Preserves edge continuity better than Telea. Similar speed. Uses the same Radius parameter.</li>
-        <li><strong style="color:#ddd;">FFT (Spectral)</strong> &mdash; Transforms each color channel to the frequency domain, suppresses high-energy periodic peaks (the net&rsquo;s repeating pattern), and inverse-transforms. Blends the result into masked pixels only. Best for dense, regular netting patterns.</li>
+        <li><strong style="color:#ddd;">FFT (Spectral)</strong> &mdash; Works on the principle that the netting is a repeating pattern, which shows up as distinct spikes in the frequency domain. For each color channel (R, G, B) independently:
+          <ol style="margin:0.3rem 0 0.3rem 1rem;">
+            <li>The image is padded to an optimal size and converted to a complex number representation (real + imaginary components).</li>
+            <li>A <strong>Forward Discrete Fourier Transform (DFT)</strong> converts the image from the spatial domain (pixels) into the frequency domain (sinusoidal components). Each point in the frequency image represents a specific repeating pattern &mdash; its position encodes the direction and spacing, its magnitude encodes how strong that pattern is.</li>
+            <li>The magnitude spectrum is analyzed: the mean and standard deviation of the log-magnitudes are computed. Frequency bins whose log-magnitude exceeds <strong>2.5 standard deviations above the mean</strong> are identified as high-energy peaks &mdash; these correspond to the net&rsquo;s periodic grid pattern, which concentrates energy at specific frequencies due to its regular strand spacing.</li>
+            <li>These peaks are <strong>suppressed to 5% of their original magnitude</strong>, effectively erasing the net&rsquo;s repeating pattern from the frequency representation. The DC component (overall brightness, center of the spectrum) and a small neighborhood around it are always preserved so the image&rsquo;s average color and large-scale features remain untouched.</li>
+            <li>An <strong>Inverse DFT</strong> converts back to the spatial domain, producing a version of the channel with the periodic net pattern removed.</li>
+          </ol>
+          The three processed channels are recombined with the original alpha channel. The final result is blended with the original image: only pixels within the detected mask are replaced with the FFT-cleaned version, preserving untouched areas exactly. This method is most effective on dense, regular diamond or square grid netting where the pattern has a strong, consistent spatial frequency.</li>
       </ul>
 
       <h3 style="color:#ccc; font-size:0.9rem; margin:0.75rem 0 0.4rem;">General</h3>
