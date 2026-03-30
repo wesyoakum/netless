@@ -15,7 +15,7 @@
 
   .header-bar {
     width: 100%; padding: 1rem 0; text-align: center;
-    background: #16a085; /* change this color each commit to verify deploy */
+    background: #f39c12; /* change this color each commit to verify deploy */
   }
 
   h1 { margin: 0.25rem 0 0.15rem; font-size: 1.8rem; letter-spacing: -0.02em; }
@@ -158,6 +158,10 @@
   </div>
 
   <div class="checkbox-group">
+    <input type="checkbox" id="connectedFilter"> <label for="connectedFilter">Connected Only</label>
+  </div>
+
+  <div class="checkbox-group">
     <input type="checkbox" id="showMask" checked> <label for="showMask">Show Mask</label>
   </div>
 
@@ -245,6 +249,7 @@ showMaskCb.addEventListener("change", () => {
 // radius, morphSize, dilate are stored as tenths-of-percent (slider value / 10 = %)
 // Actual pixel values are computed from the shorter image dimension at process time.
 const lineFilterCb = document.getElementById("lineFilter");
+const connectedFilterCb = document.getElementById("connectedFilter");
 
 function getParams() {
   return {
@@ -255,6 +260,7 @@ function getParams() {
     scale: parseInt(scaleEl.value) / 100,
     method: methodEl.value,
     lineFilter: lineFilterCb.checked,
+    connectedFilter: connectedFilterCb.checked,
     showMask: showMaskCb.checked,
   };
 }
@@ -271,12 +277,49 @@ function resolveParams(params, width, height) {
     dilate: Math.max(0, Math.round(params.dilatePct * ref)),
     method: params.method,
     lineFilter: params.lineFilter,
+    connectedFilter: params.connectedFilter,
     showMask: params.showMask,
     scale: params.scale,
   };
 }
 
 // --- Line filter: keep only mask pixels near Hough-detected lines ---
+// --- Connected component filter: keep only the largest connected region ---
+function applyConnectedFilter(mask) {
+  const labels = new cv.Mat();
+  const stats = new cv.Mat();
+  const centroids = new cv.Mat();
+  const numLabels = cv.connectedComponentsWithStats(mask, labels, stats, centroids);
+
+  if (numLabels <= 1) {
+    // 0 = background only, nothing to filter
+    labels.delete(); stats.delete(); centroids.delete();
+    return;
+  }
+
+  // Find the largest component (skip label 0 = background)
+  let largestLabel = 1;
+  let largestArea = 0;
+  for (let i = 1; i < numLabels; i++) {
+    const area = stats.intAt(i, cv.CC_STAT_AREA);
+    if (area > largestArea) {
+      largestArea = area;
+      largestLabel = i;
+    }
+  }
+
+  // Zero out everything except the largest component
+  const labelData = labels.data32S;
+  const maskData = mask.data;
+  for (let i = 0; i < labelData.length; i++) {
+    if (labelData[i] !== largestLabel) {
+      maskData[i] = 0;
+    }
+  }
+
+  labels.delete(); stats.delete(); centroids.delete();
+}
+
 function applyLineFilter(mask) {
   // Detect line segments in the mask using Probabilistic Hough Transform
   const lines = new cv.Mat();
@@ -333,6 +376,11 @@ function buildNetMask(src, params) {
   // Line filter: keep only mask pixels that lie near detected lines
   if (params.lineFilter) {
     applyLineFilter(netMask);
+  }
+
+  // Connected component filter: keep only the largest connected blob
+  if (params.connectedFilter) {
+    applyConnectedFilter(netMask);
   }
 
   if (params.dilate > 0) {
