@@ -15,7 +15,7 @@
 
   .header-bar {
     width: 100%; padding: 1rem 0; text-align: center;
-    background: #e74c3c; /* change this color each commit to verify deploy */
+    background: #16a085; /* change this color each commit to verify deploy */
   }
 
   h1 { margin: 0.25rem 0 0.15rem; font-size: 1.8rem; letter-spacing: -0.02em; }
@@ -154,6 +154,10 @@
   </div>
 
   <div class="checkbox-group">
+    <input type="checkbox" id="lineFilter"> <label for="lineFilter">Line Filter</label>
+  </div>
+
+  <div class="checkbox-group">
     <input type="checkbox" id="showMask" checked> <label for="showMask">Show Mask</label>
   </div>
 
@@ -240,6 +244,8 @@ showMaskCb.addEventListener("change", () => {
 // --- Params helper ---
 // radius, morphSize, dilate are stored as tenths-of-percent (slider value / 10 = %)
 // Actual pixel values are computed from the shorter image dimension at process time.
+const lineFilterCb = document.getElementById("lineFilter");
+
 function getParams() {
   return {
     threshold: parseInt(thresholdEl.value),
@@ -248,6 +254,7 @@ function getParams() {
     dilatePct: parseInt(document.getElementById("dilate").value) / 1000,
     scale: parseInt(scaleEl.value) / 100,
     method: methodEl.value,
+    lineFilter: lineFilterCb.checked,
     showMask: showMaskCb.checked,
   };
 }
@@ -263,9 +270,42 @@ function resolveParams(params, width, height) {
     morphSize: morphSize,
     dilate: Math.max(0, Math.round(params.dilatePct * ref)),
     method: params.method,
+    lineFilter: params.lineFilter,
     showMask: params.showMask,
     scale: params.scale,
   };
+}
+
+// --- Line filter: keep only mask pixels near Hough-detected lines ---
+function applyLineFilter(mask) {
+  // Detect line segments in the mask using Probabilistic Hough Transform
+  const lines = new cv.Mat();
+  const minLength = Math.round(Math.min(mask.rows, mask.cols) * 0.03);
+  const maxGap = Math.round(minLength * 0.5);
+  cv.HoughLinesP(mask, lines, 1, Math.PI / 180, 30, minLength, maxGap);
+
+  if (lines.rows === 0) {
+    lines.delete();
+    return; // no lines found, leave mask unchanged
+  }
+
+  // Build a new mask containing only pixels near detected lines
+  const lineMask = cv.Mat.zeros(mask.rows, mask.cols, cv.CV_8UC1);
+  const lineWidth = Math.max(3, Math.round(Math.min(mask.rows, mask.cols) * 0.005));
+
+  for (let i = 0; i < lines.rows; i++) {
+    const x1 = lines.intAt(i, 0);
+    const y1 = lines.intAt(i, 1);
+    const x2 = lines.intAt(i, 2);
+    const y2 = lines.intAt(i, 3);
+    cv.line(lineMask, new cv.Point(x1, y1), new cv.Point(x2, y2),
+      new cv.Scalar(255), lineWidth);
+  }
+  lines.delete();
+
+  // Intersect: keep only mask pixels that overlap with the line regions
+  cv.bitwise_and(mask, lineMask, mask);
+  lineMask.delete();
 }
 
 // --- Net mask detection (same algorithm as Python version) ---
@@ -289,6 +329,11 @@ function buildNetMask(src, params) {
   cv.subtract(darkMask, opened, netMask);
   darkMask.delete();
   opened.delete();
+
+  // Line filter: keep only mask pixels that lie near detected lines
+  if (params.lineFilter) {
+    applyLineFilter(netMask);
+  }
 
   if (params.dilate > 0) {
     const dilateKernel = cv.getStructuringElement(
