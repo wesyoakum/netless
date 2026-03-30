@@ -15,7 +15,7 @@
 
   .header-bar {
     width: 100%; padding: 1rem 0; text-align: center;
-    background: #e67e22; /* change this color each commit to verify deploy */
+    background: #16a085; /* change this color each commit to verify deploy */
   }
 
   h1 { margin: 0.25rem 0 0.15rem; font-size: 1.8rem; letter-spacing: -0.02em; }
@@ -610,40 +610,31 @@ function fillNavierStokes(src, netMask, radius) {
 function fillFFT(src, netMask, params) {
   // Iterative FFT-based reconstruction:
   // 1. Initialize masked pixels via inverse-distance-weighted cardinal fill
-  // 2. Iterate: FFT → suppress high frequencies → IFFT → enforce known pixels
-  //
-  // The mask marks missing data. Standard FFT can't handle nulls, so we
-  // initialize missing pixels deterministically, then iteratively project
-  // between the frequency constraint (smoothness) and the spatial constraint
-  // (known pixels must stay fixed).
-
+  // 2. Iterate: FFT → low-pass filter → IFFT → enforce known pixels
   const h = src.rows;
   const w = src.cols;
   const iterations = params.fftIter;
-  const cutoffRatio = params.fftCutoff; // fraction of spectrum to keep
+  const cutoffRatio = params.fftCutoff;
 
-  // Build mask boolean array once
   const maskData = netMask.data;
   const totalPx = h * w;
 
   const channels = new cv.MatVector();
   cv.split(src, channels);
-  const resultChannels = new cv.MatVector();
 
   // Optimal DFT size
   const dftRows = cv.getOptimalDFTSize(h);
   const dftCols = cv.getOptimalDFTSize(w);
+  const dftSize = dftRows * dftCols;
 
-  // Build low-pass filter mask (elliptical, centered)
-  // Kept in spatial layout matching DFT output (DC at corners)
-  const lpFilter = new Float32Array(dftRows * dftCols);
+  // Build low-pass filter (DC at corners in unshifted layout)
+  const lpFilter = new Float32Array(dftSize);
   const halfR = dftRows / 2;
   const halfC = dftCols / 2;
   const radiusR = halfR * cutoffRatio;
   const radiusC = halfC * cutoffRatio;
   for (let y = 0; y < dftRows; y++) {
     for (let x = 0; x < dftCols; x++) {
-      // Distance from DC (which is at corners in unshifted DFT)
       let dy = y < halfR ? y : dftRows - y;
       let dx = x < halfC ? x : dftCols - x;
       const d = (dy / radiusR) ** 2 + (dx / radiusC) ** 2;
@@ -651,23 +642,26 @@ function fillFFT(src, netMask, params) {
     }
   }
 
+  // Pre-compute mask boolean
+  const isMasked = new Uint8Array(totalPx);
+  for (let i = 0; i < totalPx; i++) {
+    isMasked[i] = maskData[i] > 0 ? 1 : 0;
+  }
+
+  // Process R, G, B channels; collect results as raw arrays
+  const channelResults = [];
+
   for (let c = 0; c < 3; c++) {
     const chan = channels.get(c);
     const chanData = chan.data;
 
     // --- Step 1: Cardinal inverse-distance initialization ---
-    // Work on a float copy
     const pixels = new Float32Array(totalPx);
-    const isMasked = new Uint8Array(totalPx);
-    for (let i = 0; i < totalPx; i++) {
-      pixels[i] = chanData[i];
-      isMasked[i] = maskData[i] > 0 ? 1 : 0;
-    }
+    for (let i = 0; i < totalPx; i++) pixels[i] = chanData[i];
 
-    // For each masked pixel, find nearest unmasked in 4 cardinal directions
-    // and interpolate using inverse distance weighting.
-    // Process multiple passes so thick masked regions fill from boundary inward.
-    const filled = new Uint8Array(totalPx); // track which masked px are filled
+    const origPixels = new Float32Array(pixels); // save original known values
+
+    const filled = new Uint8Array(totalPx);
     for (let pass = 0; pass < 20; pass++) {
       let changed = false;
       for (let y = 0; y < h; y++) {
@@ -676,7 +670,6 @@ function fillFFT(src, netMask, params) {
           if (!isMasked[idx] || filled[idx]) continue;
 
           let sumW = 0, sumV = 0;
-
           // Up
           for (let dy = y - 1; dy >= 0; dy--) {
             const ni = dy * w + x;
@@ -709,92 +702,92 @@ function fillFFT(src, netMask, params) {
     }
 
     // --- Step 2: Iterative FFT reconstruction ---
-    // Create float mat from initialized pixels
-    const floatChan = cv.Mat.zeros(dftRows, dftCols, cv.CV_32F);
-    const fData = floatChan.data32F;
+    // Work with raw Float32Arrays to avoid OpenCV.js ownership issues.
+    // Layout: two contiguous dftSize arrays for real and imaginary parts.
+    // Copy initialized pixels into padded real array.
+    let realArr = new Float32Array(dftSize);
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
-        fData[y * dftCols + x] = pixels[y * w + x];
+        realArr[y * dftCols + x] = pixels[y * w + x];
       }
     }
 
-    const zeros = cv.Mat.zeros(dftRows, dftCols, cv.CV_32F);
-
     for (let iter = 0; iter < iterations; iter++) {
-      // Forward DFT
+      // Build complex mat from current real values
+      const reMat = cv.matFromArray(dftRows, dftCols, cv.CV_32F, realArr);
+      const imMat = cv.Mat.zeros(dftRows, dftCols, cv.CV_32F);
       const pv = new cv.MatVector();
-      pv.push_back(floatChan);
-      pv.push_back(zeros.clone());
-      const complex = new cv.Mat();
-      cv.merge(pv, complex);
-      pv.delete();
+      pv.push_back(reMat);
+      pv.push_back(imMat);
+      const complexMat = new cv.Mat();
+      cv.merge(pv, complexMat);
 
-      cv.dft(complex, complex);
+      // Forward DFT
+      cv.dft(complexMat, complexMat);
 
-      // Apply low-pass filter in frequency domain
-      const splitVec = new cv.MatVector();
-      cv.split(complex, splitVec);
-      const re = splitVec.get(0);
-      const im = splitVec.get(1);
-      const reD = re.data32F;
-      const imD = im.data32F;
-      for (let i = 0; i < dftRows * dftCols; i++) {
+      // Split, apply low-pass, read back
+      const sv = new cv.MatVector();
+      cv.split(complexMat, sv);
+      const reOut = sv.get(0);
+      const imOut = sv.get(1);
+      const reD = reOut.data32F;
+      const imD = imOut.data32F;
+      for (let i = 0; i < dftSize; i++) {
         reD[i] *= lpFilter[i];
         imD[i] *= lpFilter[i];
       }
 
-      // Inverse DFT
-      const filtVec = new cv.MatVector();
-      filtVec.push_back(re);
-      filtVec.push_back(im);
-      const filtComplex = new cv.Mat();
-      cv.merge(filtVec, filtComplex);
-      cv.dft(filtComplex, filtComplex, cv.DFT_INVERSE | cv.DFT_SCALE);
+      // Rebuild and inverse DFT
+      const fv = new cv.MatVector();
+      fv.push_back(reOut);
+      fv.push_back(imOut);
+      const filtMat = new cv.Mat();
+      cv.merge(fv, filtMat);
+      cv.dft(filtMat, filtMat, cv.DFT_INVERSE | cv.DFT_SCALE);
 
-      // Extract real part back into floatChan
-      const outVec = new cv.MatVector();
-      cv.split(filtComplex, outVec);
-      const realPart = outVec.get(0);
-      const rpData = realPart.data32F;
-      const fcData = floatChan.data32F;
+      // Extract real part
+      const ov = new cv.MatVector();
+      cv.split(filtMat, ov);
+      const resultReal = ov.get(0).data32F;
 
+      // Update realArr: masked pixels get FFT result, known pixels get original
       for (let y = 0; y < h; y++) {
         for (let x = 0; x < w; x++) {
           const di = y * dftCols + x;
           const si = y * w + x;
-          if (isMasked[si]) {
-            fcData[di] = rpData[di];
-          } else {
-            fcData[di] = pixels[si];
-          }
+          realArr[di] = isMasked[si] ? resultReal[di] : origPixels[si];
         }
       }
 
-      complex.delete(); splitVec.delete();
-      filtVec.delete(); filtComplex.delete(); outVec.delete();
+      // Cleanup everything this iteration
+      reMat.delete(); imMat.delete(); pv.delete(); complexMat.delete();
+      sv.delete(); fv.delete(); filtMat.delete(); ov.delete();
     }
 
-    // Extract result channel
-    const chan8 = new cv.Mat();
-    const cropped = floatChan.roi(new cv.Rect(0, 0, w, h));
-    cropped.convertTo(chan8, cv.CV_8U);
-    resultChannels.push_back(chan8);
-
-    // Cleanup
-    floatChan.delete(); zeros.delete(); chan8.delete();
+    // Extract result as uint8 array
+    const chanResult = new Uint8Array(totalPx);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const v = realArr[y * dftCols + x];
+        chanResult[y * w + x] = Math.max(0, Math.min(255, Math.round(v)));
+      }
+    }
+    channelResults.push(chanResult);
   }
 
-  // Keep original alpha
-  resultChannels.push_back(channels.get(3));
-
-  const fftResult = new cv.Mat();
-  cv.merge(resultChannels, fftResult);
-
-  // Final: keep original everywhere except masked pixels
+  // Build RGBA output
   const result = src.clone();
-  fftResult.copyTo(result, netMask);
+  const resultData = result.data;
+  for (let i = 0; i < totalPx; i++) {
+    if (isMasked[i]) {
+      resultData[i * 4]     = channelResults[0][i]; // R
+      resultData[i * 4 + 1] = channelResults[1][i]; // G
+      resultData[i * 4 + 2] = channelResults[2][i]; // B
+      // Alpha stays from original
+    }
+  }
 
-  channels.delete(); resultChannels.delete(); fftResult.delete();
+  channels.delete();
   return result;
 }
 
