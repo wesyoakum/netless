@@ -15,7 +15,7 @@
 
   .header-bar {
     width: 100%; padding: 1rem 0; text-align: center;
-    background: #c0392b; /* change this color each commit to verify deploy */
+    background: #16a085; /* change this color each commit to verify deploy */
   }
 
   h1 { margin: 0.25rem 0 0.15rem; font-size: 1.8rem; letter-spacing: -0.02em; }
@@ -166,6 +166,10 @@
     <input type="checkbox" id="infillEnabled" checked> <label for="infillEnabled">Enable Infill</label>
   </div>
 
+  <div class="checkbox-group infill-ctrl">
+    <input type="checkbox" id="sharpen"> <label for="sharpen">Sharpen</label>
+  </div>
+
   <div class="control-group infill-ctrl">
     <label>Method</label>
     <select id="method" style="padding:0.35rem 0.5rem; border-radius:4px; background:#333; color:#eee; border:1px solid #555; font-size:0.85rem;">
@@ -256,7 +260,7 @@
           <ol style="margin:0.3rem 0 0.3rem 1rem;">
             <li><strong>Initialization:</strong> Masked pixels are treated as unknown. Each one is filled by finding the nearest valid (unmasked) pixel in the four cardinal directions (up, down, left, right) and computing an inverse-distance-weighted average. This propagates inward over multiple passes so that even thick masked regions get a reasonable starting estimate from boundary pixels.</li>
             <li><strong>Forward DFT:</strong> The initialized image is padded to optimal DFT size and transformed to the frequency domain. Each point in the spectrum represents a repeating spatial pattern &mdash; position encodes direction and spacing, magnitude encodes strength.</li>
-            <li><strong>Frequency constraint:</strong> A low-pass filter zeros out frequencies beyond the Freq Cutoff ratio. This enforces the assumption that the clean image (without the net) is smoother than the corrupted one &mdash; the net&rsquo;s thin, high-frequency structure gets suppressed while natural image content (which is predominantly low-frequency) is preserved.</li>
+            <li><strong>Frequency constraint:</strong> A smooth Butterworth low-pass filter attenuates frequencies beyond the Freq Cutoff ratio. A Butterworth rolloff (rather than a hard cutoff) avoids Gibbs-phenomenon ringing that would otherwise appear near the net edges. This enforces the assumption that the clean image (without the net) is smoother than the corrupted one &mdash; the net&rsquo;s thin, high-frequency structure gets suppressed while natural image content (which is predominantly low-frequency) is preserved.</li>
             <li><strong>Inverse DFT:</strong> The filtered spectrum is transformed back to the spatial domain.</li>
             <li><strong>Spatial constraint:</strong> All originally unmasked (known) pixels are restored to their exact original values. Only masked pixels are allowed to change. This is critical &mdash; it prevents the frequency filtering from degrading known good data.</li>
             <li><strong>Iteration:</strong> Steps 2&ndash;5 repeat for the configured number of FFT Iterations. Each cycle, the frequency constraint pulls masked pixel values toward a spectrally smooth solution, while the spatial constraint anchors known pixels. The masked pixels converge toward values that are both consistent with their neighbors and spectrally plausible.</li>
@@ -274,6 +278,7 @@
         <li><strong style="color:#ddd;">FFT Iterations</strong> &mdash; Number of FFT &harr; IFFT cycles for the iterative reconstruction. More iterations let the frequency constraint propagate further into masked regions. 10&ndash;30 is usually sufficient.</li>
         <li><strong style="color:#ddd;">Freq Cutoff</strong> &mdash; Fraction of the frequency spectrum to preserve (0.50&ndash;0.99). Lower values enforce stronger smoothness by cutting more high frequencies, producing softer fills. Higher values preserve more detail but may retain net artifacts. 0.85 is a good starting point.</li>
         <li><strong style="color:#ddd;">Enable Infill</strong> &mdash; When off, only the mask is computed and displayed. Useful for dialing in mask parameters without waiting for the infill step.</li>
+        <li><strong style="color:#ddd;">Sharpen</strong> &mdash; Applies an unsharp-mask post-process to the inpainted pixels only. Helps counteract the softening produced by frequency-domain reconstruction (most noticeable with the FFT method). Leaves unmasked pixels untouched.</li>
       </ul>
     </div>
   </details>
@@ -322,6 +327,7 @@ const fftIterValEl = document.getElementById("fftIterVal");
 const fftCutoffEl = document.getElementById("fftCutoff");
 const fftCutoffValEl = document.getElementById("fftCutoffVal");
 const infillEnabledCb = document.getElementById("infillEnabled");
+const sharpenCb = document.getElementById("sharpen");
 const lineFilterCb = document.getElementById("lineFilter");
 const connectedFilterCb = document.getElementById("connectedFilter");
 
@@ -429,6 +435,7 @@ function getParams() {
     lineFilter: lineFilterCb.checked,
     connectedFilter: connectedFilterCb.checked,
     infillEnabled: infillEnabledCb.checked,
+    sharpen: sharpenCb.checked,
     showMask: showMaskCb.checked,
   };
 }
@@ -450,6 +457,7 @@ function resolveParams(params, width, height) {
     lineFilter: params.lineFilter,
     connectedFilter: params.connectedFilter,
     infillEnabled: params.infillEnabled,
+    sharpen: params.sharpen,
     showMask: params.showMask,
     scale: params.scale,
   };
@@ -628,17 +636,22 @@ function fillFFT(src, netMask, params) {
   const dftSize = dftRows * dftCols;
 
   // Build low-pass filter (DC at corners in unshifted layout)
+  // Butterworth smooth rolloff — eliminates Gibbs ringing that a hard cutoff causes.
+  // H(d) = 1 / (1 + (d/d0)^(2n))  — flat in passband, smooth transition, flat in stopband.
   const lpFilter = new Float32Array(dftSize);
   const halfR = dftRows / 2;
   const halfC = dftCols / 2;
   const radiusR = halfR * cutoffRatio;
   const radiusC = halfC * cutoffRatio;
+  const butterOrder = 4; // order 4 = reasonably sharp but still ringing-free
   for (let y = 0; y < dftRows; y++) {
     for (let x = 0; x < dftCols; x++) {
       let dy = y < halfR ? y : dftRows - y;
       let dx = x < halfC ? x : dftCols - x;
-      const d = (dy / radiusR) ** 2 + (dx / radiusC) ** 2;
-      lpFilter[y * dftCols + x] = d <= 1.0 ? 1.0 : 0.0;
+      // Normalized squared distance from DC relative to the cutoff ellipse
+      const dSq = (dy / radiusR) ** 2 + (dx / radiusC) ** 2;
+      // Butterworth: 1 / (1 + dSq^n) where dSq already = (d/d0)^2
+      lpFilter[y * dftCols + x] = 1.0 / (1.0 + Math.pow(dSq, butterOrder));
     }
   }
 
@@ -774,14 +787,48 @@ function fillFFT(src, netMask, params) {
   return result;
 }
 
-function fillFrame(src, netMask, params) {
-  switch (params.method) {
-    case "diffusion": return fillDiffusion(src, netMask, params.diffKernel, params.diffIter);
-    case "telea":     return fillTelea(src, netMask, params.radius);
-    case "ns":        return fillNavierStokes(src, netMask, params.radius);
-    case "fft":       return fillFFT(src, netMask, params);
-    default:          return fillTelea(src, netMask, params.radius);
+// Unsharp mask: sharpened = image + amount * (image - blurred)
+// Applied only within the provided mask so unmasked (original) pixels stay untouched.
+function applyUnsharpMask(img, mask, amount, blurSigma) {
+  const blurred = new cv.Mat();
+  const ksize = new cv.Size(0, 0); // let sigma pick kernel size
+  cv.GaussianBlur(img, blurred, ksize, blurSigma, blurSigma, cv.BORDER_REPLICATE);
+
+  const sharpened = new cv.Mat();
+  cv.addWeighted(img, 1 + amount, blurred, -amount, 0, sharpened);
+  blurred.delete();
+
+  // Blend: sharpened inside the mask, original outside
+  const imgData = img.data;
+  const sData = sharpened.data;
+  const mData = mask.data;
+  const total = mask.rows * mask.cols;
+  for (let i = 0; i < total; i++) {
+    if (mData[i] > 0) {
+      imgData[i * 4]     = sData[i * 4];
+      imgData[i * 4 + 1] = sData[i * 4 + 1];
+      imgData[i * 4 + 2] = sData[i * 4 + 2];
+      // alpha untouched
+    }
   }
+  sharpened.delete();
+}
+
+function fillFrame(src, netMask, params) {
+  let result;
+  switch (params.method) {
+    case "diffusion": result = fillDiffusion(src, netMask, params.diffKernel, params.diffIter); break;
+    case "telea":     result = fillTelea(src, netMask, params.radius); break;
+    case "ns":        result = fillNavierStokes(src, netMask, params.radius); break;
+    case "fft":       result = fillFFT(src, netMask, params); break;
+    default:          result = fillTelea(src, netMask, params.radius); break;
+  }
+
+  if (params.sharpen) {
+    applyUnsharpMask(result, netMask, 0.8, 1.2);
+  }
+
+  return result;
 }
 
 // --- Process single image ---
